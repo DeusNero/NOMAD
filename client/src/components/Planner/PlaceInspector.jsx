@@ -190,7 +190,6 @@ export default function PlaceInspector({
               </span>
             )}
           </div>
-          </div>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
               <span style={{ fontWeight: 600, fontSize: 15, color: 'var(--text-primary)', lineHeight: '1.3' }}>{place.name}</span>
