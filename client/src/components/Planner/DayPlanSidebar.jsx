@@ -928,25 +928,25 @@ export default function DayPlanSidebar({
                 </button>
               ))}
             </div>
-            <textarea
+            <input
               ref={noteInputRef}
+              type="text"
               value={ui.text}
+              onChange={e => setNoteUi(prev => ({ ...prev, [dayId]: { ...prev[dayId], text: e.target.value } }))}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); saveNote(Number(dayId)) } if (e.key === 'Escape') cancelNote(Number(dayId)) }}
+              placeholder={t('dayplan.noteTitle')}
+              style={{ fontSize: 13, fontWeight: 500, border: '1px solid var(--border-primary)', borderRadius: 8, padding: '8px 10px', fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box', color: 'var(--text-primary)' }}
+            />
+            <textarea
+              value={ui.time}
               maxLength={150}
               rows={3}
-              onChange={e => setNoteUi(prev => ({ ...prev, [dayId]: { ...prev[dayId], text: e.target.value } }))}
-              onKeyDown={e => { if (e.key === 'Escape') cancelNote(Number(dayId)) }}
-              placeholder={t('dayplan.noteTitle')}
-              style={{ fontSize: 13, fontWeight: 500, border: '1px solid var(--border-primary)', borderRadius: 8, padding: '8px 10px', fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box', color: 'var(--text-primary)', resize: 'none', lineHeight: 1.4 }}
-            />
-            <div style={{ textAlign: 'right', fontSize: 9, color: ui.text.length >= 140 ? '#d97706' : 'var(--text-faint)', marginTop: 2 }}>{ui.text.length}/150</div>
-            <input
-              type="text"
-              value={ui.time}
               onChange={e => setNoteUi(prev => ({ ...prev, [dayId]: { ...prev[dayId], time: e.target.value } }))}
-              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); saveNote(Number(dayId)) } if (e.key === 'Escape') cancelNote(Number(dayId)) }}
+              onKeyDown={e => { if (e.key === 'Escape') cancelNote(Number(dayId)) }}
               placeholder={t('dayplan.noteSubtitle')}
-              style={{ fontSize: 12, border: '1px solid var(--border-primary)', borderRadius: 8, padding: '7px 10px', fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box', color: 'var(--text-primary)' }}
+              style={{ fontSize: 12, border: '1px solid var(--border-primary)', borderRadius: 8, padding: '7px 10px', fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box', color: 'var(--text-primary)', resize: 'none', lineHeight: 1.4 }}
             />
+            <div style={{ textAlign: 'right', fontSize: 9, color: (ui.time?.length || 0) >= 140 ? '#d97706' : 'var(--text-faint)', marginTop: -2 }}>{ui.time?.length || 0}/150</div>
             <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
               <button onClick={() => cancelNote(Number(dayId))} style={{ fontSize: 12, background: 'none', border: '1px solid var(--border-primary)', borderRadius: 8, padding: '6px 14px', cursor: 'pointer', color: 'var(--text-muted)', fontFamily: 'inherit' }}>{t('common.cancel')}</button>
               <button onClick={() => saveNote(Number(dayId))} style={{ fontSize: 12, background: 'var(--accent)', color: 'var(--accent-text)', border: 'none', borderRadius: 8, padding: '6px 16px', cursor: 'pointer', fontWeight: 600, fontFamily: 'inherit' }}>
