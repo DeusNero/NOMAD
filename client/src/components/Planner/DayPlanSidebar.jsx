@@ -928,16 +928,17 @@ export default function DayPlanSidebar({
                 </button>
               ))}
             </div>
-            <input
+            <textarea
               ref={noteInputRef}
-              type="text"
               value={ui.text}
               maxLength={150}
+              rows={3}
               onChange={e => setNoteUi(prev => ({ ...prev, [dayId]: { ...prev[dayId], text: e.target.value } }))}
-              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); saveNote(Number(dayId)) } if (e.key === 'Escape') cancelNote(Number(dayId)) }}
+              onKeyDown={e => { if (e.key === 'Escape') cancelNote(Number(dayId)) }}
               placeholder={t('dayplan.noteTitle')}
-              style={{ fontSize: 13, fontWeight: 500, border: '1px solid var(--border-primary)', borderRadius: 8, padding: '8px 10px', fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box', color: 'var(--text-primary)' }}
+              style={{ fontSize: 13, fontWeight: 500, border: '1px solid var(--border-primary)', borderRadius: 8, padding: '8px 10px', fontFamily: 'inherit', outline: 'none', width: '100%', boxSizing: 'border-box', color: 'var(--text-primary)', resize: 'none', lineHeight: 1.4 }}
             />
+            <div style={{ textAlign: 'right', fontSize: 9, color: ui.text.length >= 140 ? '#d97706' : 'var(--text-faint)', marginTop: 2 }}>{ui.text.length}/150</div>
             <input
               type="text"
               value={ui.time}
