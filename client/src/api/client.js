@@ -227,6 +227,9 @@ export const knowledgebaseApi = {
   updateConfig: (tripId, data) => apiClient.put(`/trips/${tripId}/knowledgebase/config`, data).then(r => r.data),
   reindex: (tripId) => apiClient.post(`/trips/${tripId}/knowledgebase/reindex`).then(r => r.data),
   query: (tripId, question) => apiClient.post(`/trips/${tripId}/knowledgebase/query`, { question }).then(r => r.data),
+  getSource: (tripId, relativePath) => apiClient.get(`/trips/${tripId}/knowledgebase/source`, {
+    params: { path: relativePath }
+  }).then(r => r.data),
   uploadMarkdown: (tripId, formData) => apiClient.post(`/trips/${tripId}/knowledgebase/upload`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' }
   }).then(r => r.data),

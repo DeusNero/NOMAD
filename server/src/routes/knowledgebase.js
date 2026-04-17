@@ -8,6 +8,7 @@ const { authenticate, adminOnly, demoUploadBlock } = require('../middleware/auth
 const { broadcast } = require('../websocket');
 const {
   buildFtsQuery,
+  buildKnowledgebaseNoMatchReply,
   buildKnowledgebasePrompt,
   chunkMarkdownContent,
   collectMarkdownFiles,
@@ -15,8 +16,8 @@ const {
   extractAnthropicText,
   extractGeminiText,
   isPathInside,
-  normalizeAbsolutePath,
   sanitizeUploadFilename,
+  tokenizeSearchTerms,
 } = require('../utils/knowledgebase');
 
 const router = express.Router({ mergeParams: true });
@@ -147,6 +148,38 @@ function loadMessages(tripId, limit = 100) {
   `).all(tripId, limit);
 
   return rows.reverse().map(formatMessage);
+}
+
+function loadMessageById(messageId) {
+  return formatMessage(db.prepare(`
+    SELECT km.*, u.username, u.avatar
+    FROM knowledgebase_messages km
+    LEFT JOIN users u ON km.user_id = u.id
+    WHERE km.id = ?
+  `).get(messageId));
+}
+
+function insertKnowledgebaseExchange({ tripId, userId, question, assistantContent, provider = null, model = null, citations = [] }) {
+  const insertMessage = db.prepare(`
+    INSERT INTO knowledgebase_messages (trip_id, user_id, role, content, provider, model, citations)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const userInsert = insertMessage.run(tripId, userId, 'user', question, null, null, null);
+  const assistantInsert = insertMessage.run(
+    tripId,
+    null,
+    'assistant',
+    assistantContent,
+    provider,
+    model,
+    citations.length > 0 ? JSON.stringify(citations) : null
+  );
+
+  return {
+    userMessage: loadMessageById(userInsert.lastInsertRowid),
+    assistantMessage: loadMessageById(assistantInsert.lastInsertRowid),
+  };
 }
 
 function removeChunksByIds(chunkIds) {
@@ -313,10 +346,28 @@ function searchKnowledgebaseSnippets(tripId, question, limit = 6) {
 
   if (rows.length > 0) return rows;
 
-  const likeTerm = `%${String(question || '').trim()}%`;
-  if (likeTerm === '%%') return [];
+  const looseTokens = tokenizeSearchTerms(question, 3);
+  if (looseTokens.length === 0) return [];
 
-  return db.prepare(`
+  const tokenClauses = looseTokens
+    .map(() => `(
+      LOWER(chunk_text) LIKE ?
+      OR LOWER(COALESCE(title, '')) LIKE ?
+      OR LOWER(COALESCE(heading, '')) LIKE ?
+      OR LOWER(relative_path) LIKE ?
+    )`)
+    .join(' OR ');
+
+  const params = [
+    tripId,
+    ...looseTokens.flatMap(token => {
+      const pattern = `%${token}%`;
+      return [pattern, pattern, pattern, pattern];
+    }),
+    Math.max(limit * 8, 40),
+  ];
+
+  const candidates = db.prepare(`
     SELECT
       id,
       relative_path,
@@ -324,18 +375,37 @@ function searchKnowledgebaseSnippets(tripId, question, limit = 6) {
       heading,
       chunk_text,
       chunk_index,
-      9999 AS score
+      file_modified_at
     FROM knowledgebase_chunks
     WHERE trip_id = ?
-      AND (
-        chunk_text LIKE ?
-        OR title LIKE ?
-        OR heading LIKE ?
-        OR relative_path LIKE ?
-      )
+      AND (${tokenClauses})
     ORDER BY file_modified_at DESC, id DESC
     LIMIT ?
-  `).all(tripId, likeTerm, likeTerm, likeTerm, likeTerm, limit);
+  `).all(...params);
+
+  const scored = candidates
+    .map(row => {
+      const relativePath = String(row.relative_path || '').toLowerCase();
+      const title = String(row.title || '').toLowerCase();
+      const heading = String(row.heading || '').toLowerCase();
+      const text = String(row.chunk_text || '').toLowerCase();
+
+      const score = looseTokens.reduce((sum, token) => {
+        let tokenScore = 0;
+        if (relativePath.includes(token)) tokenScore += 5;
+        if (title.includes(token)) tokenScore += 7;
+        if (heading.includes(token)) tokenScore += 6;
+        if (text.includes(token)) tokenScore += 2;
+        return sum + tokenScore;
+      }, 0);
+
+      return { ...row, score };
+    })
+    .filter(row => row.score > 0)
+    .sort((a, b) => b.score - a.score || String(b.file_modified_at || '').localeCompare(String(a.file_modified_at || '')) || b.id - a.id)
+    .slice(0, limit);
+
+  return scored;
 }
 
 async function requestGemini(model, apiKey, prompt) {
@@ -398,6 +468,33 @@ async function generateAnswer(provider, model, apiKey, prompt) {
   if (provider === 'gemini') return requestGemini(model, apiKey, prompt);
   if (provider === 'anthropic') return requestAnthropic(model, apiKey, prompt);
   throw new Error('Unsupported provider');
+}
+
+function loadKnowledgebaseSource(config, relativePath) {
+  const vaultPath = ensureReadableDirectory(config.vault_path);
+  const normalizedRelativePath = String(relativePath || '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .trim();
+
+  if (!normalizedRelativePath) throw new Error('Source path is required');
+
+  const absolutePath = path.resolve(vaultPath, normalizedRelativePath);
+  if (!isPathInside(vaultPath, absolutePath)) {
+    throw new Error('Source path must stay inside the vault path');
+  }
+
+  const stat = fs.statSync(absolutePath, { throwIfNoEntry: false });
+  if (!stat || !stat.isFile()) throw new Error('Source file not found');
+  if (path.extname(absolutePath).toLowerCase() !== '.md') {
+    throw new Error('Only markdown sources can be opened');
+  }
+
+  return {
+    relative_path: normalizedRelativePath,
+    content: fs.readFileSync(absolutePath, 'utf8'),
+    file_modified_at: stat.mtime.toISOString(),
+  };
 }
 
 router.get('/', authenticate, (req, res) => {
@@ -490,6 +587,7 @@ router.post('/query', authenticate, async (req, res) => {
   try {
     const config = getKnowledgebaseConfig(tripId);
     if (!config) return res.status(400).json({ error: 'Knowledgebase is not configured yet' });
+    const stats = getKnowledgebaseStats(tripId);
 
     const keys = getKnowledgebaseKeys();
     const provider = PROVIDERS.has(config.provider) ? config.provider : 'gemini';
@@ -500,7 +598,18 @@ router.post('/query', authenticate, async (req, res) => {
 
     const snippets = searchKnowledgebaseSnippets(tripId, question, 6);
     if (snippets.length === 0) {
-      return res.status(400).json({ error: 'No matching knowledgebase content was found. Reindex the vault or broaden the question.' });
+      const reply = buildKnowledgebaseNoMatchReply(stats);
+      const { userMessage, assistantMessage } = insertKnowledgebaseExchange({
+        tripId,
+        userId: req.user.id,
+        question,
+        assistantContent: reply,
+      });
+
+      res.status(201).json({ userMessage, assistantMessage });
+      broadcast(tripId, 'knowledgebase:message:created', { message: userMessage }, req.headers['x-socket-id']);
+      broadcast(tripId, 'knowledgebase:message:created', { message: assistantMessage }, req.headers['x-socket-id']);
+      return;
     }
 
     const history = loadMessages(tripId, 8).map(message => ({
@@ -518,40 +627,36 @@ router.post('/query', authenticate, async (req, res) => {
       excerpt: snippet.chunk_text.slice(0, 280),
     }));
 
-    const insertMessage = db.prepare(`
-      INSERT INTO knowledgebase_messages (trip_id, user_id, role, content, provider, model, citations)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const userInsert = insertMessage.run(tripId, req.user.id, 'user', question, null, null, null);
-    const assistantInsert = insertMessage.run(
+    const { userMessage, assistantMessage } = insertKnowledgebaseExchange({
       tripId,
-      null,
-      'assistant',
-      answer,
+      userId: req.user.id,
+      question,
+      assistantContent: answer,
       provider,
-      config.model || DEFAULT_MODELS[provider],
-      JSON.stringify(citations)
-    );
-
-    const userMessage = formatMessage(db.prepare(`
-      SELECT km.*, u.username, u.avatar
-      FROM knowledgebase_messages km
-      LEFT JOIN users u ON km.user_id = u.id
-      WHERE km.id = ?
-    `).get(userInsert.lastInsertRowid));
-
-    const assistantMessage = formatMessage(db.prepare(`
-      SELECT km.*
-      FROM knowledgebase_messages km
-      WHERE km.id = ?
-    `).get(assistantInsert.lastInsertRowid));
+      model: config.model || DEFAULT_MODELS[provider],
+      citations,
+    });
 
     res.status(201).json({ userMessage, assistantMessage });
     broadcast(tripId, 'knowledgebase:message:created', { message: userMessage }, req.headers['x-socket-id']);
     broadcast(tripId, 'knowledgebase:message:created', { message: assistantMessage }, req.headers['x-socket-id']);
   } catch (err) {
     res.status(500).json({ error: err.message || 'Knowledgebase query failed' });
+  }
+});
+
+router.get('/source', authenticate, (req, res) => {
+  const tripId = Number(req.params.tripId);
+  if (!verifyTripAccess(tripId, req.user.id)) return res.status(404).json({ error: 'Trip not found' });
+
+  try {
+    const config = getKnowledgebaseConfig(tripId);
+    if (!config) return res.status(400).json({ error: 'Knowledgebase is not configured yet' });
+
+    const source = loadKnowledgebaseSource(config, req.query.path);
+    res.json(source);
+  } catch (err) {
+    res.status(400).json({ error: err.message || 'Failed to open knowledgebase source' });
   }
 });
 
