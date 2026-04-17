@@ -15,7 +15,9 @@ const {
   ensureReadableDirectory,
   extractAnthropicText,
   extractGeminiText,
+  findVaultFileByBasename,
   isPathInside,
+  rankKnowledgebaseCandidates,
   sanitizeUploadFilename,
   tokenizeSearchTerms,
 } = require('../utils/knowledgebase');
@@ -317,13 +319,13 @@ function indexUploadedFile(tripId, config, absoluteFilePath) {
   return { relativePath, chunkCount: rows.length };
 }
 
-function searchKnowledgebaseSnippets(tripId, question, limit = 6) {
+function searchKnowledgebaseSnippets(tripId, question, maxResults = 10) {
   const ftsQuery = buildFtsQuery(question);
-  let rows = [];
+  const candidates = [];
 
   if (ftsQuery) {
     try {
-      rows = db.prepare(`
+      const rows = db.prepare(`
         SELECT
           c.id,
           c.relative_path,
@@ -338,16 +340,17 @@ function searchKnowledgebaseSnippets(tripId, question, limit = 6) {
           AND knowledgebase_chunks_fts.trip_id = ?
         ORDER BY score
         LIMIT ?
-      `).all(ftsQuery, String(tripId), limit);
+      `).all(ftsQuery, String(tripId), Math.max(maxResults * 3, 18));
+      candidates.push(...rows);
     } catch {
-      rows = [];
+      // Fall back to loose matching below.
     }
   }
 
-  if (rows.length > 0) return rows;
-
-  const looseTokens = tokenizeSearchTerms(question, 3);
-  if (looseTokens.length === 0) return [];
+  const looseTokens = tokenizeSearchTerms(question, 2, { maxTokens: 12 });
+  if (looseTokens.length === 0) {
+    return rankKnowledgebaseCandidates(candidates, question, maxResults);
+  }
 
   const tokenClauses = looseTokens
     .map(() => `(
@@ -364,10 +367,10 @@ function searchKnowledgebaseSnippets(tripId, question, limit = 6) {
       const pattern = `%${token}%`;
       return [pattern, pattern, pattern, pattern];
     }),
-    Math.max(limit * 8, 40),
+    Math.max(maxResults * 6, 48),
   ];
 
-  const candidates = db.prepare(`
+  const looseMatches = db.prepare(`
     SELECT
       id,
       relative_path,
@@ -383,29 +386,11 @@ function searchKnowledgebaseSnippets(tripId, question, limit = 6) {
     LIMIT ?
   `).all(...params);
 
-  const scored = candidates
-    .map(row => {
-      const relativePath = String(row.relative_path || '').toLowerCase();
-      const title = String(row.title || '').toLowerCase();
-      const heading = String(row.heading || '').toLowerCase();
-      const text = String(row.chunk_text || '').toLowerCase();
+  const uniqueCandidates = [...new Map(
+    [...candidates, ...looseMatches].map(row => [String(row.id), row])
+  ).values()];
 
-      const score = looseTokens.reduce((sum, token) => {
-        let tokenScore = 0;
-        if (relativePath.includes(token)) tokenScore += 5;
-        if (title.includes(token)) tokenScore += 7;
-        if (heading.includes(token)) tokenScore += 6;
-        if (text.includes(token)) tokenScore += 2;
-        return sum + tokenScore;
-      }, 0);
-
-      return { ...row, score };
-    })
-    .filter(row => row.score > 0)
-    .sort((a, b) => b.score - a.score || String(b.file_modified_at || '').localeCompare(String(a.file_modified_at || '')) || b.id - a.id)
-    .slice(0, limit);
-
-  return scored;
+  return rankKnowledgebaseCandidates(uniqueCandidates, question, maxResults);
 }
 
 async function requestGemini(model, apiKey, prompt) {
@@ -470,12 +455,61 @@ async function generateAnswer(provider, model, apiKey, prompt) {
   throw new Error('Unsupported provider');
 }
 
-function loadKnowledgebaseSource(config, relativePath) {
-  const vaultPath = ensureReadableDirectory(config.vault_path);
-  const normalizedRelativePath = String(relativePath || '')
+function normalizeVaultRelativePath(relativePath) {
+  return String(relativePath || '')
     .replace(/\\/g, '/')
     .replace(/^\/+/, '')
     .trim();
+}
+
+function resolveKnowledgebaseAsset(config, sourceRelativePath, assetReference) {
+  const vaultPath = ensureReadableDirectory(config.vault_path);
+  const normalizedSource = normalizeVaultRelativePath(sourceRelativePath);
+  const normalizedAsset = String(assetReference || '')
+    .trim()
+    .replace(/^<|>$/g, '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .split('|')[0]
+    .trim();
+
+  if (!normalizedAsset) throw new Error('Asset path is required');
+
+  const noteDir = normalizedSource ? path.posix.dirname(normalizedSource) : '';
+  const candidatePaths = [];
+
+  if (noteDir && noteDir !== '.') {
+    candidatePaths.push(path.resolve(vaultPath, noteDir, normalizedAsset));
+  }
+  candidatePaths.push(path.resolve(vaultPath, normalizedAsset));
+
+  for (const absolutePath of candidatePaths) {
+    if (!isPathInside(vaultPath, absolutePath)) continue;
+    const stat = fs.statSync(absolutePath, { throwIfNoEntry: false });
+    if (stat?.isFile()) {
+      return {
+        absolutePath,
+        relativePath: path.relative(vaultPath, absolutePath).split(path.sep).join('/'),
+      };
+    }
+  }
+
+  if (!normalizedAsset.includes('/')) {
+    const byBasename = findVaultFileByBasename(vaultPath, normalizedAsset);
+    if (byBasename && isPathInside(vaultPath, byBasename)) {
+      return {
+        absolutePath: byBasename,
+        relativePath: path.relative(vaultPath, byBasename).split(path.sep).join('/'),
+      };
+    }
+  }
+
+  throw new Error('Asset file not found');
+}
+
+function loadKnowledgebaseSource(config, relativePath) {
+  const vaultPath = ensureReadableDirectory(config.vault_path);
+  const normalizedRelativePath = normalizeVaultRelativePath(relativePath);
 
   if (!normalizedRelativePath) throw new Error('Source path is required');
 
@@ -596,7 +630,7 @@ router.post('/query', authenticate, async (req, res) => {
       return res.status(400).json({ error: `No ${provider} API key has been configured` });
     }
 
-    const snippets = searchKnowledgebaseSnippets(tripId, question, 6);
+    const snippets = searchKnowledgebaseSnippets(tripId, question, 10);
     if (snippets.length === 0) {
       const reply = buildKnowledgebaseNoMatchReply(stats);
       const { userMessage, assistantMessage } = insertKnowledgebaseExchange({
@@ -657,6 +691,22 @@ router.get('/source', authenticate, (req, res) => {
     res.json(source);
   } catch (err) {
     res.status(400).json({ error: err.message || 'Failed to open knowledgebase source' });
+  }
+});
+
+router.get('/asset', authenticate, (req, res) => {
+  const tripId = Number(req.params.tripId);
+  if (!verifyTripAccess(tripId, req.user.id)) return res.status(404).json({ error: 'Trip not found' });
+
+  try {
+    const config = getKnowledgebaseConfig(tripId);
+    if (!config) return res.status(400).json({ error: 'Knowledgebase is not configured yet' });
+
+    const asset = resolveKnowledgebaseAsset(config, req.query.source, req.query.asset);
+    res.set('Cache-Control', 'private, max-age=300');
+    res.sendFile(asset.absolutePath);
+  } catch (err) {
+    res.status(400).json({ error: err.message || 'Failed to open knowledgebase asset' });
   }
 });
 

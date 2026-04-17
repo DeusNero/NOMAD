@@ -9,6 +9,7 @@ const {
   chunkMarkdownContent,
   isPathInside,
   normalizeAbsolutePath,
+  rankKnowledgebaseCandidates,
   sanitizeUploadFilename,
   tokenizeSearchTerms,
 } = require('../src/utils/knowledgebase');
@@ -67,12 +68,43 @@ test('buildFtsQuery tokenizes natural questions for sqlite fts', () => {
 test('tokenizeSearchTerms de-duplicates tokens and can enforce a longer minimum length', () => {
   assert.deepEqual(
     tokenizeSearchTerms('Tokyo tokyo wine bars in Tokyo'),
-    ['tokyo', 'wine', 'bars', 'in']
+    ['tokyo', 'wine', 'bars']
   );
   assert.deepEqual(
     tokenizeSearchTerms('hi mt fuji Kyoto', 3),
     ['fuji', 'kyoto']
   );
+});
+
+test('tokenizeSearchTerms drops conversational filler before retrieval', () => {
+  assert.deepEqual(
+    tokenizeSearchTerms('Can you tell me what I should visit in Naha?'),
+    ['naha']
+  );
+});
+
+test('rankKnowledgebaseCandidates prefers exact place matches over unrelated snippets', () => {
+  const ranked = rankKnowledgebaseCandidates([
+    {
+      id: 1,
+      relative_path: 'raw/japan/okinawa/naha-what-to-see.md',
+      title: 'What To See In Naha',
+      heading: 'Top sights',
+      chunk_text: 'Naha is a good base for Shuri Castle, Kokusai-dori, and day trips around Okinawa.',
+      file_modified_at: '2026-04-18T00:00:00.000Z',
+    },
+    {
+      id: 2,
+      relative_path: 'raw/rwa/crypto-native-investor-relations.md',
+      title: 'The Crypto Native Guide to Investor Relations',
+      heading: 'Narrative matters',
+      chunk_text: 'Narrative matters, but the market will still judge whether the data backs it up.',
+      file_modified_at: '2026-04-18T00:00:00.000Z',
+    },
+  ], 'Can you tell me what I should visit in Naha?', 10);
+
+  assert.equal(ranked.length, 1);
+  assert.equal(ranked[0].relative_path, 'raw/japan/okinawa/naha-what-to-see.md');
 });
 
 test('buildKnowledgebasePrompt includes history, question, and numbered snippets', () => {
