@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useCallback, useEffect } from 'react'
+import React, { createContext, useContext, useState, useCallback, useEffect, useMemo } from 'react'
 import { CheckCircle, XCircle, AlertCircle, Info, X } from 'lucide-react'
 
 const ToastContext = createContext(null)
@@ -84,12 +84,12 @@ export const useToast = () => {
     }
   }, [])
 
-  return {
+  return useMemo(() => ({
     success: (message, duration) => show(message, 'success', duration),
     error: (message, duration) => show(message, 'error', duration),
     warning: (message, duration) => show(message, 'warning', duration),
     info: (message, duration) => show(message, 'info', duration),
-  }
+  }), [show])
 }
 
 export default useToast
