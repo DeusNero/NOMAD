@@ -657,6 +657,8 @@ export const useTripStore = create((set, get) => ({
 
   loadBudgetItems: async (tripId) => {
     try {
+      // Create any missing placeholders before reading the current budget list.
+      await budgetApi.syncPlaceholders(tripId).catch(() => null)
       const data = await budgetApi.list(tripId)
       set({ budgetItems: data.items })
     } catch (err) {

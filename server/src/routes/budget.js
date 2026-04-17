@@ -2,6 +2,7 @@ const express = require('express');
 const { db, canAccessTrip } = require('../db/database');
 const { authenticate } = require('../middleware/auth');
 const { broadcast } = require('../websocket');
+const { findMissingBudgetPlaceholders } = require('../utils/budgetPlaceholders');
 
 const router = express.Router({ mergeParams: true });
 
@@ -20,6 +21,83 @@ function loadItemMembers(itemId) {
 
 function avatarUrl(user) {
   return user.avatar ? `/uploads/avatars/${user.avatar}` : null;
+}
+
+function getPlaceholderSourceData(tripId) {
+  const accommodations = db.prepare(`
+    SELECT
+      a.place_id,
+      a.start_day_id,
+      a.end_day_id,
+      a.check_in,
+      a.check_out,
+      a.confirmation,
+      a.notes,
+      a.created_at,
+      p.name as place_name,
+      p.address as place_address,
+      sd.date as start_date,
+      ed.date as end_date,
+      sd.day_number as start_day_number,
+      ed.day_number as end_day_number
+    FROM day_accommodations a
+    JOIN places p ON p.id = a.place_id
+    JOIN days sd ON sd.id = a.start_day_id
+    JOIN days ed ON ed.id = a.end_day_id
+    WHERE a.trip_id = ?
+    ORDER BY sd.day_number ASC, a.created_at ASC
+  `).all(tripId);
+
+  const carReservations = db.prepare(`
+    SELECT title, reservation_time, location, confirmation_number, notes, created_at
+    FROM reservations
+    WHERE trip_id = ? AND type = 'car'
+    ORDER BY reservation_time ASC, created_at ASC
+  `).all(tripId);
+
+  const existingItems = db.prepare(`
+    SELECT category, name
+    FROM budget_items
+    WHERE trip_id = ?
+  `).all(tripId);
+
+  return { accommodations, carReservations, existingItems };
+}
+
+function syncBudgetPlaceholders(tripId) {
+  const sync = db.transaction((currentTripId) => {
+    const { accommodations, carReservations, existingItems } = getPlaceholderSourceData(currentTripId);
+    const placeholders = findMissingBudgetPlaceholders({ accommodations, carReservations, existingItems });
+
+    if (placeholders.length === 0) return [];
+
+    const insert = db.prepare(`
+      INSERT INTO budget_items (trip_id, category, name, total_price, persons, days, note, sort_order)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const selectItem = db.prepare('SELECT * FROM budget_items WHERE id = ?');
+    const maxOrder = db.prepare('SELECT MAX(sort_order) as max FROM budget_items WHERE trip_id = ?').get(currentTripId);
+    let nextSortOrder = (maxOrder.max !== null ? maxOrder.max : -1) + 1;
+
+    return placeholders.map(placeholder => {
+      const result = insert.run(
+        currentTripId,
+        placeholder.category,
+        placeholder.name,
+        placeholder.total_price,
+        placeholder.persons,
+        placeholder.days,
+        placeholder.note,
+        nextSortOrder++
+      );
+
+      const item = selectItem.get(result.lastInsertRowid);
+      item.members = [];
+      return item;
+    });
+  });
+
+  return sync(tripId);
 }
 
 // GET /api/trips/:tripId/budget
@@ -73,6 +151,21 @@ router.get('/summary/per-person', authenticate, (req, res) => {
   `).all(tripId);
 
   res.json({ summary: summary.map(s => ({ ...s, avatar_url: avatarUrl(s) })) });
+});
+
+// POST /api/trips/:tripId/budget/sync-placeholders
+router.post('/sync-placeholders', authenticate, (req, res) => {
+  const { tripId } = req.params;
+
+  const trip = verifyTripOwnership(tripId, req.user.id);
+  if (!trip) return res.status(404).json({ error: 'Trip not found' });
+
+  const items = syncBudgetPlaceholders(tripId);
+
+  res.json({ items });
+  for (const item of items) {
+    broadcast(tripId, 'budget:created', { item }, req.headers['x-socket-id']);
+  }
 });
 
 // POST /api/trips/:tripId/budget

@@ -150,6 +150,7 @@ export const mapsApi = {
 
 export const budgetApi = {
   list: (tripId) => apiClient.get(`/trips/${tripId}/budget`).then(r => r.data),
+  syncPlaceholders: (tripId) => apiClient.post(`/trips/${tripId}/budget/sync-placeholders`).then(r => r.data),
   create: (tripId, data) => apiClient.post(`/trips/${tripId}/budget`, data).then(r => r.data),
   update: (tripId, id, data) => apiClient.put(`/trips/${tripId}/budget/${id}`, data).then(r => r.data),
   delete: (tripId, id) => apiClient.delete(`/trips/${tripId}/budget/${id}`).then(r => r.data),
