@@ -9,6 +9,16 @@ const SKIP_DIRS = new Set([
   'node_modules',
 ]);
 
+function tokenizeSearchTerms(text, minLength = 2) {
+  const tokens = String(text || '')
+    .toLowerCase()
+    .match(/[a-z0-9]{2,}/g);
+
+  if (!tokens) return [];
+
+  return [...new Set(tokens.filter(token => token.length >= minLength))].slice(0, 8);
+}
+
 function normalizeAbsolutePath(input) {
   if (typeof input !== 'string') return null;
   const trimmed = input.trim();
@@ -148,16 +158,21 @@ function chunkMarkdownContent(content, relativePath, maxChunkLength = MAX_CHUNK_
 }
 
 function buildFtsQuery(text) {
-  const tokens = String(text || '')
-    .toLowerCase()
-    .match(/[a-z0-9]{2,}/g);
-
+  const tokens = tokenizeSearchTerms(text);
   if (!tokens || tokens.length === 0) return null;
 
   return tokens
     .slice(0, 8)
     .map(token => `"${token.replace(/"/g, '')}"*`)
     .join(' OR ');
+}
+
+function buildKnowledgebaseNoMatchReply(stats = {}) {
+  if (!stats.chunk_count) {
+    return 'The knowledgebase is configured but no markdown has been indexed yet. Run Reindex first, then try your question again.';
+  }
+
+  return 'I could not find relevant notes for that question in the indexed knowledgebase. Try naming a place, topic, or note title more specifically, or reindex if the vault changed.';
 }
 
 function buildKnowledgebasePrompt({ question, snippets, history }) {
@@ -211,6 +226,7 @@ function extractAnthropicText(body) {
 module.exports = {
   MAX_CHUNK_LENGTH,
   buildFtsQuery,
+  buildKnowledgebaseNoMatchReply,
   buildKnowledgebasePrompt,
   chunkMarkdownContent,
   collectMarkdownFiles,
@@ -220,4 +236,5 @@ module.exports = {
   isPathInside,
   normalizeAbsolutePath,
   sanitizeUploadFilename,
+  tokenizeSearchTerms,
 };

@@ -4,11 +4,13 @@ const path = require('path');
 
 const {
   buildFtsQuery,
+  buildKnowledgebaseNoMatchReply,
   buildKnowledgebasePrompt,
   chunkMarkdownContent,
   isPathInside,
   normalizeAbsolutePath,
   sanitizeUploadFilename,
+  tokenizeSearchTerms,
 } = require('../src/utils/knowledgebase');
 
 test('normalizeAbsolutePath accepts absolute paths and rejects relative ones', () => {
@@ -62,6 +64,17 @@ test('buildFtsQuery tokenizes natural questions for sqlite fts', () => {
   assert.equal(buildFtsQuery('!?'), null);
 });
 
+test('tokenizeSearchTerms de-duplicates tokens and can enforce a longer minimum length', () => {
+  assert.deepEqual(
+    tokenizeSearchTerms('Tokyo tokyo wine bars in Tokyo'),
+    ['tokyo', 'wine', 'bars', 'in']
+  );
+  assert.deepEqual(
+    tokenizeSearchTerms('hi mt fuji Kyoto', 3),
+    ['fuji', 'kyoto']
+  );
+});
+
 test('buildKnowledgebasePrompt includes history, question, and numbered snippets', () => {
   const prompt = buildKnowledgebasePrompt({
     question: 'Where should we drink wine in Tokyo?',
@@ -77,4 +90,15 @@ test('buildKnowledgebasePrompt includes history, question, and numbered snippets
   assert.match(prompt, /Focus on natural wine/);
   assert.match(prompt, /Where should we drink wine in Tokyo/);
   assert.match(prompt, /\[1\] raw\/tokyo-bars\.md > Natural Wine/);
+});
+
+test('buildKnowledgebaseNoMatchReply distinguishes empty and populated indexes', () => {
+  assert.match(
+    buildKnowledgebaseNoMatchReply({ chunk_count: 0 }),
+    /no markdown has been indexed yet/i
+  );
+  assert.match(
+    buildKnowledgebaseNoMatchReply({ chunk_count: 24 }),
+    /could not find relevant notes/i
+  );
 });

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Brain, FileText, RefreshCw, Save, SendHorizontal, Settings2, ShieldCheck, Upload } from 'lucide-react'
+import { Brain, ExternalLink, FileText, Loader2, RefreshCw, Save, SendHorizontal, Settings2, ShieldCheck, Upload } from 'lucide-react'
 import { knowledgebaseApi } from '../../api/client'
 import { addListener, removeListener } from '../../api/websocket'
 import { useAuthStore } from '../../store/authStore'
@@ -17,7 +17,7 @@ function formatTimestamp(value) {
   })
 }
 
-function MessageBubble({ message, currentUserId }) {
+function MessageBubble({ message, currentUserId, onOpenSource, openingSourcePath }) {
   const isOwn = message.role === 'user' && String(message.user_id) === String(currentUserId)
 
   return (
@@ -93,13 +93,21 @@ function MessageBubble({ message, currentUserId }) {
           gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
         }}>
           {message.citations.map(citation => (
-            <div key={`${message.id}-${citation.index}`} style={{
+            <button
+              key={`${message.id}-${citation.index}`}
+              type="button"
+              onClick={() => onOpenSource?.(citation)}
+              style={{
               border: '1px solid var(--border-faint)',
               borderRadius: 12,
               background: 'var(--bg-card)',
               padding: 10,
+              textAlign: 'left',
+              cursor: 'pointer',
+              fontFamily: 'inherit',
             }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
                 <span style={{
                   width: 20,
                   height: 20,
@@ -114,8 +122,24 @@ function MessageBubble({ message, currentUserId }) {
                 }}>
                   {citation.index}
                 </span>
-                <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)' }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)', minWidth: 0 }}>
                   {citation.title || citation.relative_path}
+                </span>
+                </div>
+                <span style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  fontSize: 11,
+                  color: 'var(--text-muted)',
+                  flexShrink: 0,
+                }}>
+                  {openingSourcePath === citation.relative_path ? (
+                    <Loader2 size={13} className="animate-spin" />
+                  ) : (
+                    <ExternalLink size={13} />
+                  )}
+                  Open
                 </span>
               </div>
               <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>
@@ -124,7 +148,7 @@ function MessageBubble({ message, currentUserId }) {
               <div style={{ fontSize: 12, color: 'var(--text-primary)', lineHeight: 1.45 }}>
                 {citation.excerpt}
               </div>
-            </div>
+            </button>
           ))}
         </div>
       )}
@@ -148,6 +172,8 @@ export default function KnowledgebasePanel({ tripId }) {
   const [showSettings, setShowSettings] = useState(false)
   const [savingConfig, setSavingConfig] = useState(false)
   const [reindexing, setReindexing] = useState(false)
+  const [openingSourcePath, setOpeningSourcePath] = useState(null)
+  const [sourcePreview, setSourcePreview] = useState(null)
   const [settingsForm, setSettingsForm] = useState({
     vault_path: '',
     upload_path: '',
@@ -288,6 +314,25 @@ export default function KnowledgebasePanel({ tripId }) {
       event.target.value = ''
     }
   }
+
+  const handleOpenSource = useCallback(async (citation) => {
+    if (!citation?.relative_path || openingSourcePath) return
+
+    setOpeningSourcePath(citation.relative_path)
+    try {
+      const source = await knowledgebaseApi.getSource(tripId, citation.relative_path)
+      setSourcePreview({
+        ...source,
+        heading: citation.heading || null,
+        title: citation.title || source.relative_path,
+        excerpt: citation.excerpt || '',
+      })
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to open source note')
+    } finally {
+      setOpeningSourcePath(null)
+    }
+  }, [openingSourcePath, toast, tripId])
 
   if (loading) {
     return (
@@ -505,7 +550,13 @@ export default function KnowledgebasePanel({ tripId }) {
               </div>
             ) : (
               messages.map(message => (
-                <MessageBubble key={message.id} message={message} currentUserId={user?.id} />
+                <MessageBubble
+                  key={message.id}
+                  message={message}
+                  currentUserId={user?.id}
+                  onOpenSource={handleOpenSource}
+                  openingSourcePath={openingSourcePath}
+                />
               ))
             )}
           </div>
@@ -752,6 +803,63 @@ export default function KnowledgebasePanel({ tripId }) {
             Anthropic {capabilities.has_anthropic_key ? 'connected' : 'missing'}
           </div>
         </div>
+      </Modal>
+
+      <Modal
+        isOpen={!!sourcePreview}
+        onClose={() => setSourcePreview(null)}
+        title={sourcePreview?.title || 'Source Note'}
+        size="2xl"
+      >
+        {sourcePreview && (
+          <div style={{ display: 'grid', gap: 14 }}>
+            <div style={{
+              borderRadius: 14,
+              border: '1px solid var(--border-faint)',
+              background: 'var(--bg-secondary)',
+              padding: 14,
+              display: 'grid',
+              gap: 8,
+            }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>
+                {sourcePreview.relative_path}
+              </div>
+              {sourcePreview.heading && sourcePreview.heading !== sourcePreview.title && (
+                <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                  Focused section: {sourcePreview.heading}
+                </div>
+              )}
+              {sourcePreview.excerpt && (
+                <div style={{
+                  fontSize: 12,
+                  lineHeight: 1.5,
+                  color: 'var(--text-primary)',
+                  padding: '10px 12px',
+                  borderRadius: 12,
+                  background: 'var(--bg-card)',
+                  border: '1px solid var(--border-faint)',
+                }}>
+                  {sourcePreview.excerpt}
+                </div>
+              )}
+            </div>
+
+            <div style={{
+              borderRadius: 14,
+              border: '1px solid var(--border-faint)',
+              background: 'var(--bg-card)',
+              padding: 16,
+              maxHeight: '55vh',
+              overflow: 'auto',
+              whiteSpace: 'pre-wrap',
+              lineHeight: 1.6,
+              color: 'var(--text-primary)',
+              fontSize: 13,
+            }}>
+              {sourcePreview.content}
+            </div>
+          </div>
+        )}
       </Modal>
     </div>
   )
