@@ -22,7 +22,7 @@ const authenticate = (req, res, next) => {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     const user = db.prepare(
-      'SELECT id, username, email, role, maps_api_key, unsplash_api_key, openweather_api_key FROM users WHERE id = ?'
+      'SELECT id, username, email, role, maps_api_key, unsplash_api_key, openweather_api_key, gemini_api_key, anthropic_api_key FROM users WHERE id = ?'
     ).get(decoded.id);
     if (!user) {
       return res.status(401).json({ error: 'User not found' });
@@ -51,7 +51,7 @@ const optionalAuth = (req, res, next) => {
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
     const user = db.prepare(
-      'SELECT id, username, email, role, maps_api_key, unsplash_api_key, openweather_api_key FROM users WHERE id = ?'
+      'SELECT id, username, email, role, maps_api_key, unsplash_api_key, openweather_api_key, gemini_api_key, anthropic_api_key FROM users WHERE id = ?'
     ).get(decoded.id);
     req.user = user || null;
   } catch (err) {
