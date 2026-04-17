@@ -230,6 +230,10 @@ export const knowledgebaseApi = {
   getSource: (tripId, relativePath) => apiClient.get(`/trips/${tripId}/knowledgebase/source`, {
     params: { path: relativePath }
   }).then(r => r.data),
+  getAssetBlob: (tripId, sourcePath, assetPath) => apiClient.get(`/trips/${tripId}/knowledgebase/asset`, {
+    params: { source: sourcePath, asset: assetPath },
+    responseType: 'blob',
+  }).then(r => r.data),
   uploadMarkdown: (tripId, formData) => apiClient.post(`/trips/${tripId}/knowledgebase/upload`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' }
   }).then(r => r.data),

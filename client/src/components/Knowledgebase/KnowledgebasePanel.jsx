@@ -3,6 +3,7 @@ import { Brain, ExternalLink, FileText, Loader2, RefreshCw, Save, SendHorizontal
 import { knowledgebaseApi } from '../../api/client'
 import { addListener, removeListener } from '../../api/websocket'
 import { useAuthStore } from '../../store/authStore'
+import KnowledgebaseMarkdown from './KnowledgebaseMarkdown'
 import Modal from '../shared/Modal'
 import { useToast } from '../shared/Toast'
 
@@ -15,6 +16,29 @@ function formatTimestamp(value) {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+function mergeMessages(existingMessages, nextMessages) {
+  const seen = new Set(existingMessages
+    .filter(message => message?.id != null)
+    .map(message => String(message.id)))
+  const merged = [...existingMessages]
+
+  for (const message of nextMessages) {
+    if (!message) continue
+
+    if (message.id == null) {
+      merged.push(message)
+      continue
+    }
+
+    const id = String(message.id)
+    if (seen.has(id)) continue
+    seen.add(id)
+    merged.push(message)
+  }
+
+  return merged
 }
 
 function MessageBubble({ message, currentUserId, onOpenSource, openingSourcePath }) {
@@ -60,7 +84,7 @@ function MessageBubble({ message, currentUserId, onOpenSource, openingSourcePath
             {message.username}
           </span>
           <span style={{ fontSize: 10, color: 'var(--text-faint)' }}>
-            {formatTimestamp(message.created_at)}
+            {message.pending ? 'Searching vault...' : formatTimestamp(message.created_at)}
           </span>
         </div>
       </div>
@@ -78,11 +102,17 @@ function MessageBubble({ message, currentUserId, onOpenSource, openingSourcePath
           : (isOwn ? '#fff' : 'var(--text-primary)'),
         borderRadius: 16,
         padding: '12px 14px',
-        whiteSpace: 'pre-wrap',
         lineHeight: 1.5,
         fontSize: 14,
       }}>
-        {message.content}
+        {message.pending ? (
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
+            <Loader2 size={15} className="animate-spin" />
+            <span>{message.content}</span>
+          </div>
+        ) : (
+          <div style={{ whiteSpace: 'pre-wrap' }}>{message.content}</div>
+        )}
       </div>
 
       {message.role === 'assistant' && message.citations?.length > 0 && (
@@ -249,12 +279,38 @@ export default function KnowledgebasePanel({ tripId }) {
     const trimmed = question.trim()
     if (!trimmed || sending) return
 
+    const tempBase = Date.now()
+    const pendingUserMessage = {
+      id: `pending-user-${tempBase}`,
+      role: 'user',
+      content: trimmed,
+      created_at: new Date().toISOString(),
+      user_id: user?.id,
+      username: user?.username || 'You',
+      avatar_url: user?.avatar ? `/uploads/avatars/${user.avatar}` : null,
+    }
+    const pendingAssistantMessage = {
+      id: `pending-assistant-${tempBase}`,
+      role: 'assistant',
+      content: 'Searching the vault and ranking the most relevant notes...',
+      created_at: new Date().toISOString(),
+      username: 'Knowledgebase',
+      citations: [],
+      pending: true,
+    }
+
+    setMessages(prev => [...prev, pendingUserMessage, pendingAssistantMessage])
+    setQuestion('')
     setSending(true)
     try {
       const data = await knowledgebaseApi.query(tripId, trimmed)
-      setMessages(prev => [...prev, data.userMessage, data.assistantMessage])
-      setQuestion('')
+      setMessages(prev => mergeMessages(
+        prev.filter(message => message.id !== pendingUserMessage.id && message.id !== pendingAssistantMessage.id),
+        [data.userMessage, data.assistantMessage]
+      ))
     } catch (err) {
+      setMessages(prev => prev.filter(message => message.id !== pendingUserMessage.id && message.id !== pendingAssistantMessage.id))
+      setQuestion(trimmed)
       toast.error(err.response?.data?.error || 'Knowledgebase query failed')
     } finally {
       setSending(false)
@@ -612,9 +668,22 @@ export default function KnowledgebasePanel({ tripId }) {
                   cursor: question.trim() ? 'pointer' : 'default',
                 }}
               >
-                <SendHorizontal size={18} />
+                {sending ? <Loader2 size={18} className="animate-spin" /> : <SendHorizontal size={18} />}
               </button>
             </div>
+            {sending && (
+              <div style={{
+                marginTop: 10,
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                fontSize: 12,
+                color: 'var(--text-muted)',
+              }}>
+                <Loader2 size={14} className="animate-spin" />
+                Searching the vault and preparing a cited answer...
+              </div>
+            )}
           </div>
         </>
       )}
@@ -851,12 +920,12 @@ export default function KnowledgebasePanel({ tripId }) {
               padding: 16,
               maxHeight: '55vh',
               overflow: 'auto',
-              whiteSpace: 'pre-wrap',
-              lineHeight: 1.6,
-              color: 'var(--text-primary)',
-              fontSize: 13,
             }}>
-              {sourcePreview.content}
+              <KnowledgebaseMarkdown
+                tripId={tripId}
+                sourcePath={sourcePreview.relative_path}
+                content={sourcePreview.content}
+              />
             </div>
           </div>
         )}
