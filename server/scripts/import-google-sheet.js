@@ -10,6 +10,7 @@ const {
   findSheetTab,
   parseCsv,
 } = require('../src/utils/googleSheetImport');
+const { geocodePlaceWithSearch } = require('../src/utils/placeGeocoding');
 
 function printUsage() {
   console.log(`Usage:
@@ -86,6 +87,34 @@ async function apiRequest(baseUrl, path, { method = 'GET', token, body } = {}) {
   return response.json();
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function createPlaceSearch(baseUrl, token) {
+  let lastRequestAt = 0;
+  let searchSource = null;
+
+  return async function searchPlaces(query) {
+    if (searchSource === 'openstreetmap' && lastRequestAt) {
+      const waitMs = 1100 - (Date.now() - lastRequestAt);
+      if (waitMs > 0) {
+        await sleep(waitMs);
+      }
+    }
+
+    const response = await apiRequest(baseUrl, '/api/maps/search?lang=en', {
+      method: 'POST',
+      token,
+      body: { query },
+    });
+
+    lastRequestAt = Date.now();
+    searchSource = response.source || searchSource;
+    return response.places || [];
+  };
+}
+
 function buildExportUrl(spreadsheetId, gid) {
   return `https://docs.google.com/spreadsheets/d/${spreadsheetId}/export?format=csv&gid=${gid}`;
 }
@@ -131,6 +160,7 @@ async function loadDaysByDate(baseUrl, token, tripId) {
 async function importPlan(baseUrl, token, tripId, planImport) {
   const dayByDate = await loadDaysByDate(baseUrl, token, tripId);
   const placeIdByKey = new Map();
+  const searchPlaces = createPlaceSearch(baseUrl, token);
 
   for (const day of planImport.days) {
     const targetDay = dayByDate.get(day.date);
@@ -177,13 +207,23 @@ async function importPlan(baseUrl, token, tripId, planImport) {
     let placeId = placeIdByKey.get(placeKey);
 
     if (!placeId) {
+      const geocodedPlace = await geocodePlaceWithSearch({
+        name: stay.place.name,
+        address: stay.place.address,
+        description: stay.place.location ? `Imported stay location: ${stay.place.location}` : null,
+      }, searchPlaces);
+
       const placeResponse = await apiRequest(baseUrl, `/api/trips/${tripId}/places`, {
         method: 'POST',
         token,
         body: {
           name: stay.place.name,
-          address: stay.place.address,
+          lat: geocodedPlace?.lat ?? null,
+          lng: geocodedPlace?.lng ?? null,
+          address: geocodedPlace?.address || stay.place.address,
           description: stay.place.location ? `Imported stay location: ${stay.place.location}` : null,
+          google_place_id: geocodedPlace?.google_place_id ?? null,
+          website: geocodedPlace?.website ?? null,
         },
       });
       placeId = placeResponse.place.id;
