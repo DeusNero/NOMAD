@@ -37,6 +37,8 @@ function initDb() {
       maps_api_key TEXT,
       unsplash_api_key TEXT,
       openweather_api_key TEXT,
+      gemini_api_key TEXT,
+      anthropic_api_key TEXT,
       avatar TEXT,
       oidc_sub TEXT,
       oidc_issuer TEXT,
@@ -364,9 +366,59 @@ function initDb() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
+    CREATE TABLE IF NOT EXISTS knowledgebase_configs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trip_id INTEGER NOT NULL UNIQUE REFERENCES trips(id) ON DELETE CASCADE,
+      vault_path TEXT NOT NULL,
+      upload_path TEXT NOT NULL,
+      provider TEXT NOT NULL DEFAULT 'gemini',
+      model TEXT NOT NULL DEFAULT 'gemini-2.5-pro',
+      allow_uploads INTEGER DEFAULT 1,
+      updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      last_indexed_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS knowledgebase_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trip_id INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+      user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      role TEXT NOT NULL,
+      content TEXT NOT NULL,
+      provider TEXT,
+      model TEXT,
+      citations TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS knowledgebase_chunks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      trip_id INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+      relative_path TEXT NOT NULL,
+      title TEXT,
+      heading TEXT,
+      chunk_index INTEGER NOT NULL DEFAULT 0,
+      chunk_text TEXT NOT NULL,
+      excerpt TEXT,
+      file_modified_at TEXT,
+      file_size INTEGER,
+      indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS knowledgebase_chunks_fts USING fts5(
+      trip_id UNINDEXED,
+      chunk_text,
+      title,
+      heading,
+      relative_path
+    );
+
     CREATE INDEX IF NOT EXISTS idx_collab_notes_trip ON collab_notes(trip_id);
     CREATE INDEX IF NOT EXISTS idx_collab_polls_trip ON collab_polls(trip_id);
     CREATE INDEX IF NOT EXISTS idx_collab_messages_trip ON collab_messages(trip_id);
+    CREATE INDEX IF NOT EXISTS idx_knowledgebase_messages_trip ON knowledgebase_messages(trip_id);
+    CREATE INDEX IF NOT EXISTS idx_knowledgebase_chunks_trip ON knowledgebase_chunks(trip_id);
   `);
 
   // Create indexes for performance
@@ -613,6 +665,65 @@ function initDb() {
     () => {
       try { _db.exec('ALTER TABLE reservations ADD COLUMN reservation_end_time TEXT'); } catch {}
     },
+    // 31: Knowledgebase provider keys
+    () => {
+      try { _db.exec('ALTER TABLE users ADD COLUMN gemini_api_key TEXT'); } catch {}
+      try { _db.exec('ALTER TABLE users ADD COLUMN anthropic_api_key TEXT'); } catch {}
+    },
+    // 32: Knowledgebase addon tables
+    () => {
+      _db.exec(`
+        CREATE TABLE IF NOT EXISTS knowledgebase_configs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          trip_id INTEGER NOT NULL UNIQUE REFERENCES trips(id) ON DELETE CASCADE,
+          vault_path TEXT NOT NULL,
+          upload_path TEXT NOT NULL,
+          provider TEXT NOT NULL DEFAULT 'gemini',
+          model TEXT NOT NULL DEFAULT 'gemini-2.5-pro',
+          allow_uploads INTEGER DEFAULT 1,
+          updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          last_indexed_at DATETIME,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS knowledgebase_messages (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          trip_id INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+          user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          role TEXT NOT NULL,
+          content TEXT NOT NULL,
+          provider TEXT,
+          model TEXT,
+          citations TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE IF NOT EXISTS knowledgebase_chunks (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          trip_id INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
+          relative_path TEXT NOT NULL,
+          title TEXT,
+          heading TEXT,
+          chunk_index INTEGER NOT NULL DEFAULT 0,
+          chunk_text TEXT NOT NULL,
+          excerpt TEXT,
+          file_modified_at TEXT,
+          file_size INTEGER,
+          indexed_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS knowledgebase_chunks_fts USING fts5(
+          trip_id UNINDEXED,
+          chunk_text,
+          title,
+          heading,
+          relative_path
+        );
+        CREATE INDEX IF NOT EXISTS idx_knowledgebase_messages_trip ON knowledgebase_messages(trip_id);
+        CREATE INDEX IF NOT EXISTS idx_knowledgebase_chunks_trip ON knowledgebase_chunks(trip_id);
+      `);
+      try {
+        _db.prepare("INSERT OR IGNORE INTO addons (id, name, description, type, icon, enabled, sort_order) VALUES ('knowledgebase', 'Knowledgebase', 'Shared markdown vault search and chat for trip members', 'trip', 'Brain', 1, 7)").run();
+      } catch {}
+    },
     // Future migrations go here (append only, never reorder)
   ];
 
@@ -660,6 +771,7 @@ function initDb() {
       { id: 'vacay', name: 'Vacay', description: 'Personal vacation day planner with calendar view', type: 'global', icon: 'CalendarDays', enabled: 1, sort_order: 10 },
       { id: 'atlas', name: 'Atlas', description: 'World map of your visited countries with travel stats', type: 'global', icon: 'Globe', enabled: 1, sort_order: 11 },
       { id: 'collab', name: 'Collab', description: 'Notes, polls, and live chat for trip collaboration', type: 'trip', icon: 'Users', enabled: 1, sort_order: 6 },
+      { id: 'knowledgebase', name: 'Knowledgebase', description: 'Shared markdown vault search and chat for trip members', type: 'trip', icon: 'Brain', enabled: 1, sort_order: 7 },
     ];
     const insertAddon = _db.prepare('INSERT OR IGNORE INTO addons (id, name, description, type, icon, enabled, sort_order) VALUES (?, ?, ?, ?, ?, ?, ?)');
     for (const a of defaultAddons) insertAddon.run(a.id, a.name, a.description, a.type, a.icon, a.enabled, a.sort_order);
@@ -738,7 +850,7 @@ function getTrustedUser() {
   if (!TRUSTED_MODE) return null;
   ensureTrustedUser();
   return _db.prepare(
-    'SELECT id, username, email, role, maps_api_key, unsplash_api_key, openweather_api_key FROM users WHERE LOWER(email) = LOWER(?)'
+    'SELECT id, username, email, role, maps_api_key, unsplash_api_key, openweather_api_key, gemini_api_key, anthropic_api_key FROM users WHERE LOWER(email) = LOWER(?)'
   ).get(TRUSTED_EMAIL);
 }
 

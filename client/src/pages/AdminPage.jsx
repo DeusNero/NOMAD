@@ -50,6 +50,8 @@ export default function AdminPage() {
   // API Keys
   const [mapsKey, setMapsKey] = useState('')
   const [weatherKey, setWeatherKey] = useState('')
+  const [geminiKey, setGeminiKey] = useState('')
+  const [anthropicKey, setAnthropicKey] = useState('')
   const [showKeys, setShowKeys] = useState({})
   const [savingKeys, setSavingKeys] = useState(false)
   const [validating, setValidating] = useState({})
@@ -106,6 +108,8 @@ export default function AdminPage() {
       const data = await authApi.getSettings()
       setMapsKey(data.settings?.maps_api_key || '')
       setWeatherKey(data.settings?.openweather_api_key || '')
+      setGeminiKey(data.settings?.gemini_api_key || '')
+      setAnthropicKey(data.settings?.anthropic_api_key || '')
     } catch (err) {
       // ignore
     }
@@ -151,6 +155,8 @@ export default function AdminPage() {
       await updateApiKeys({
         maps_api_key: mapsKey,
         openweather_api_key: weatherKey,
+        gemini_api_key: geminiKey,
+        anthropic_api_key: anthropicKey,
       })
       toast.success(t('admin.keySaved'))
     } catch (err) {
@@ -589,6 +595,56 @@ export default function AdminPage() {
                         {t('admin.keyInvalid')}
                       </p>
                     )}
+                  </div>
+
+                  <div className="rounded-lg border border-slate-200 bg-slate-50 overflow-hidden">
+                    <div className="px-4 py-3 border-b border-slate-200">
+                      <h3 className="text-sm font-semibold text-slate-900">Knowledgebase Providers</h3>
+                      <p className="text-xs text-slate-500 mt-1">These keys stay server-side and are used by the trip Knowledgebase tab for shared vault queries.</p>
+                    </div>
+                    <div className="p-4 space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1.5">Gemini API Key</label>
+                        <div className="relative">
+                          <input
+                            type={showKeys.gemini ? 'text' : 'password'}
+                            value={geminiKey}
+                            onChange={e => setGeminiKey(e.target.value)}
+                            placeholder="AIza..."
+                            className="w-full pr-10 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-slate-400 focus:border-transparent"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => toggleKey('gemini')}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                          >
+                            {showKeys.gemini ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                        <p className="text-xs text-slate-400 mt-1">Recommended for the first Knowledgebase setup.</p>
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1.5">Anthropic API Key</label>
+                        <div className="relative">
+                          <input
+                            type={showKeys.anthropic ? 'text' : 'password'}
+                            value={anthropicKey}
+                            onChange={e => setAnthropicKey(e.target.value)}
+                            placeholder="sk-ant-..."
+                            className="w-full pr-10 px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-slate-400 focus:border-transparent"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => toggleKey('anthropic')}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                          >
+                            {showKeys.anthropic ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                        <p className="text-xs text-slate-400 mt-1">Optional fallback provider if you later want to switch models per trip.</p>
+                      </div>
+                    </div>
                   </div>
 
                   {/* Open-Meteo Weather Info */}

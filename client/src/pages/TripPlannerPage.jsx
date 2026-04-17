@@ -17,6 +17,7 @@ import PackingListPanel from '../components/Packing/PackingListPanel'
 import FileManager from '../components/Files/FileManager'
 import BudgetPanel from '../components/Budget/BudgetPanel'
 import CollabPanel from '../components/Collab/CollabPanel'
+import KnowledgebasePanel from '../components/Knowledgebase/KnowledgebasePanel'
 import Navbar from '../components/Layout/Navbar'
 import { useToast } from '../components/shared/Toast'
 import { Map, X, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen } from 'lucide-react'
@@ -38,7 +39,7 @@ export default function TripPlannerPage() {
   const tripStore = useTripStore()
   const { trip, days, places, assignments, packingItems, categories, reservations, budgetItems, files, selectedDayId, isLoading } = tripStore
 
-  const [enabledAddons, setEnabledAddons] = useState({ packing: true, budget: true, documents: true })
+  const [enabledAddons, setEnabledAddons] = useState({ packing: true, budget: true, documents: true, knowledgebase: true })
   const [tripAccommodations, setTripAccommodations] = useState([])
   const [allowedFileTypes, setAllowedFileTypes] = useState(null)
   const [tripMembers, setTripMembers] = useState([])
@@ -51,7 +52,13 @@ export default function TripPlannerPage() {
     addonsApi.enabled().then(data => {
       const map = {}
       data.addons.forEach(a => { map[a.id] = true })
-      setEnabledAddons({ packing: !!map.packing, budget: !!map.budget, documents: !!map.documents, collab: !!map.collab })
+      setEnabledAddons({
+        packing: !!map.packing,
+        budget: !!map.budget,
+        documents: !!map.documents,
+        collab: !!map.collab,
+        knowledgebase: !!map.knowledgebase,
+      })
     }).catch(() => {})
     authApi.getAppConfig().then(config => {
       if (config.allowed_file_types) setAllowedFileTypes(config.allowed_file_types)
@@ -65,6 +72,7 @@ export default function TripPlannerPage() {
     ...(enabledAddons.budget ? [{ id: 'finanzplan', label: t('trip.tabs.budget') }] : []),
     ...(enabledAddons.documents ? [{ id: 'dateien', label: t('trip.tabs.files') }] : []),
     ...(enabledAddons.collab ? [{ id: 'collab', label: 'Collab' }] : []),
+    ...(enabledAddons.knowledgebase ? [{ id: 'knowledgebase', label: 'Knowledgebase' }] : []),
   ]
 
   const [activeTab, setActiveTab] = useState(() => {
@@ -718,6 +726,12 @@ export default function TripPlannerPage() {
         {activeTab === 'collab' && (
           <div style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
             <CollabPanel tripId={tripId} tripMembers={tripMembers} />
+          </div>
+        )}
+
+        {activeTab === 'knowledgebase' && (
+          <div style={{ position: 'absolute', inset: 0, overflow: 'hidden' }}>
+            <KnowledgebasePanel tripId={tripId} />
           </div>
         )}
       </div>

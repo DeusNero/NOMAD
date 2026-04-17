@@ -222,6 +222,16 @@ export const collabApi = {
   linkPreview: (tripId, url) => apiClient.get(`/trips/${tripId}/collab/link-preview?url=${encodeURIComponent(url)}`).then(r => r.data),
 }
 
+export const knowledgebaseApi = {
+  getState: (tripId) => apiClient.get(`/trips/${tripId}/knowledgebase`).then(r => r.data),
+  updateConfig: (tripId, data) => apiClient.put(`/trips/${tripId}/knowledgebase/config`, data).then(r => r.data),
+  reindex: (tripId) => apiClient.post(`/trips/${tripId}/knowledgebase/reindex`).then(r => r.data),
+  query: (tripId, question) => apiClient.post(`/trips/${tripId}/knowledgebase/query`, { question }).then(r => r.data),
+  uploadMarkdown: (tripId, formData) => apiClient.post(`/trips/${tripId}/knowledgebase/upload`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' }
+  }).then(r => r.data),
+}
+
 export const backupApi = {
   list: () => apiClient.get('/backup/list').then(r => r.data),
   create: () => apiClient.post('/backup/create').then(r => r.data),

@@ -75,6 +75,7 @@ const weatherRoutes = require('./routes/weather');
 const settingsRoutes = require('./routes/settings');
 const budgetRoutes = require('./routes/budget');
 const collabRoutes = require('./routes/collab');
+const knowledgebaseRoutes = require('./routes/knowledgebase');
 const backupRoutes = require('./routes/backup');
 
 const oidcRoutes = require('./routes/oidc');
@@ -88,6 +89,7 @@ app.use('/api/trips/:tripId/packing', packingRoutes);
 app.use('/api/trips/:tripId/files', filesRoutes);
 app.use('/api/trips/:tripId/budget', budgetRoutes);
 app.use('/api/trips/:tripId/collab', collabRoutes);
+app.use('/api/trips/:tripId/knowledgebase', knowledgebaseRoutes);
 app.use('/api/trips/:tripId/reservations', reservationsRoutes);
 app.use('/api/trips/:tripId/days/:dayId/notes', dayNotesRoutes);
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
