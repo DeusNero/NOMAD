@@ -75,7 +75,6 @@ export default function TripPlannerPage() {
   const handleTabChange = (tabId) => {
     setActiveTab(tabId)
     sessionStorage.setItem(`trip-tab-${tripId}`, tabId)
-    if (tabId === 'finanzplan') tripStore.loadBudgetItems?.(tripId)
     if (tabId === 'dateien' && (!files || files.length === 0)) tripStore.loadFiles?.(tripId)
   }
   const [leftWidth, setLeftWidth] = useState(() => parseInt(localStorage.getItem('sidebarLeftWidth')) || 340)
