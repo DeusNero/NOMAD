@@ -8,6 +8,7 @@ const { v4: uuid } = require('uuid');
 const fetch = require('node-fetch');
 const { db } = require('../db/database');
 const { authenticate, demoUploadBlock } = require('../middleware/auth');
+const { ALLOW_BOOTSTRAP_REGISTRATION, TRUSTED_MODE } = require('../config');
 
 const router = express.Router();
 const { JWT_SECRET } = require('../config');
@@ -64,7 +65,11 @@ function generateToken(user) {
 router.get('/app-config', (req, res) => {
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
   const setting = db.prepare("SELECT value FROM app_settings WHERE key = 'allow_registration'").get();
-  const allowRegistration = userCount === 0 || (setting?.value ?? 'true') === 'true';
+  const allowRegistration = TRUSTED_MODE
+    ? false
+    : userCount === 0
+      ? ALLOW_BOOTSTRAP_REGISTRATION
+      : (setting?.value ?? 'true') === 'true';
   const isDemo = process.env.DEMO_MODE === 'true';
   const { version } = require('../../package.json');
   const hasGoogleKey = !!db.prepare("SELECT maps_api_key FROM users WHERE role = 'admin' AND maps_api_key IS NOT NULL AND maps_api_key != '' LIMIT 1").get();
@@ -77,6 +82,7 @@ router.get('/app-config', (req, res) => {
     allow_registration: isDemo ? false : allowRegistration,
     has_users: userCount > 0,
     version,
+    trusted_mode: TRUSTED_MODE,
     has_maps_key: hasGoogleKey,
     oidc_configured: oidcConfigured,
     oidc_display_name: oidcConfigured ? (oidcDisplayName || 'SSO') : undefined,
@@ -101,10 +107,15 @@ router.post('/demo-login', (req, res) => {
 
 // POST /api/auth/register
 router.post('/register', authLimiter, (req, res) => {
+  if (TRUSTED_MODE) {
+    return res.status(403).json({ error: 'Registration is disabled in trusted mode' });
+  }
   const { username, email, password } = req.body;
 
-  // Check if registration is allowed
   const userCount = db.prepare('SELECT COUNT(*) as count FROM users').get().count;
+  if (userCount === 0 && !ALLOW_BOOTSTRAP_REGISTRATION) {
+    return res.status(403).json({ error: 'Initial account creation is disabled. Set ALLOW_BOOTSTRAP_REGISTRATION=true temporarily or use trusted mode.' });
+  }
   if (userCount > 0) {
     const setting = db.prepare("SELECT value FROM app_settings WHERE key = 'allow_registration'").get();
     if (setting?.value === 'false') {
@@ -152,6 +163,9 @@ router.post('/register', authLimiter, (req, res) => {
 
 // POST /api/auth/login
 router.post('/login', authLimiter, (req, res) => {
+  if (TRUSTED_MODE) {
+    return res.status(403).json({ error: 'Login is disabled in trusted mode' });
+  }
   const { email, password } = req.body;
 
   if (!email || !password) {

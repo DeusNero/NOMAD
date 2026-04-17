@@ -32,7 +32,7 @@ function Section({ title, icon: Icon, children }) {
 }
 
 export default function SettingsPage() {
-  const { user, updateProfile, uploadAvatar, deleteAvatar, logout } = useAuthStore()
+  const { user, trustedMode, updateProfile, uploadAvatar, deleteAvatar, logout } = useAuthStore()
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false)
   const avatarInputRef = React.useRef(null)
   const { settings, updateSetting, updateSettings } = useSettingsStore()
@@ -378,51 +378,53 @@ export default function SettingsPage() {
                 type="email"
                 value={email}
                 onChange={e => setEmail(e.target.value)}
+                disabled={trustedMode}
                 className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-slate-400 focus:border-transparent"
               />
             </div>
 
-            {/* Change Password */}
-            <div style={{ paddingTop: 8, marginTop: 8, borderTop: '1px solid var(--border-secondary)' }}>
-              <label className="block text-sm font-medium text-slate-700 mb-3">{t('settings.changePassword')}</label>
-              <div className="space-y-3">
-                <input
-                  type="password"
-                  value={newPassword}
-                  onChange={e => setNewPassword(e.target.value)}
-                  placeholder={t('settings.newPassword')}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-slate-400 focus:border-transparent"
-                />
-                <input
-                  type="password"
-                  value={confirmPassword}
-                  onChange={e => setConfirmPassword(e.target.value)}
-                  placeholder={t('settings.confirmPassword')}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-slate-400 focus:border-transparent"
-                />
-                <button
-                  onClick={async () => {
-                    if (!newPassword) return toast.error(t('settings.passwordRequired'))
-                    if (newPassword.length < 8) return toast.error(t('settings.passwordTooShort'))
-                    if (newPassword !== confirmPassword) return toast.error(t('settings.passwordMismatch'))
-                    try {
-                      await authApi.changePassword({ new_password: newPassword })
-                      toast.success(t('settings.passwordChanged'))
-                      setNewPassword(''); setConfirmPassword('')
-                    } catch (err) {
-                      toast.error(err.response?.data?.error || t('common.error'))
-                    }
-                  }}
-                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
-                  style={{ border: '1px solid var(--border-primary)', background: 'var(--bg-card)', color: 'var(--text-secondary)' }}
-                  onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
-                  onMouseLeave={e => e.currentTarget.style.background = 'var(--bg-card)'}
-                >
-                  <Lock size={14} />
-                  {t('settings.updatePassword')}
-                </button>
+            {!trustedMode && (
+              <div style={{ paddingTop: 8, marginTop: 8, borderTop: '1px solid var(--border-secondary)' }}>
+                <label className="block text-sm font-medium text-slate-700 mb-3">{t('settings.changePassword')}</label>
+                <div className="space-y-3">
+                  <input
+                    type="password"
+                    value={newPassword}
+                    onChange={e => setNewPassword(e.target.value)}
+                    placeholder={t('settings.newPassword')}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-slate-400 focus:border-transparent"
+                  />
+                  <input
+                    type="password"
+                    value={confirmPassword}
+                    onChange={e => setConfirmPassword(e.target.value)}
+                    placeholder={t('settings.confirmPassword')}
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-slate-400 focus:border-transparent"
+                  />
+                  <button
+                    onClick={async () => {
+                      if (!newPassword) return toast.error(t('settings.passwordRequired'))
+                      if (newPassword.length < 8) return toast.error(t('settings.passwordTooShort'))
+                      if (newPassword !== confirmPassword) return toast.error(t('settings.passwordMismatch'))
+                      try {
+                        await authApi.changePassword({ new_password: newPassword })
+                        toast.success(t('settings.passwordChanged'))
+                        setNewPassword(''); setConfirmPassword('')
+                      } catch (err) {
+                        toast.error(err.response?.data?.error || t('common.error'))
+                      }
+                    }}
+                    className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                    style={{ border: '1px solid var(--border-primary)', background: 'var(--bg-card)', color: 'var(--text-secondary)' }}
+                    onMouseEnter={e => e.currentTarget.style.background = 'var(--bg-hover)'}
+                    onMouseLeave={e => e.currentTarget.style.background = 'var(--bg-card)'}
+                  >
+                    <Lock size={14} />
+                    {t('settings.updatePassword')}
+                  </button>
+                </div>
               </div>
-            </div>
+            )}
 
             <div className="flex items-center gap-4">
               <div style={{ position: 'relative', flexShrink: 0 }}>
@@ -508,26 +510,28 @@ export default function SettingsPage() {
                 {saving.profile ? <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Save className="w-4 h-4" />}
                 {t('settings.saveProfile')}
               </button>
-              <button
-                onClick={async () => {
-                  if (user?.role === 'admin') {
-                    try {
-                      const data = await adminApi.stats()
-                      const adminUsers = (await adminApi.users()).users.filter(u => u.role === 'admin')
-                      if (adminUsers.length <= 1) {
-                        setShowDeleteConfirm('blocked')
-                        return
-                      }
-                    } catch {}
-                  }
-                  setShowDeleteConfirm(true)
-                }}
-                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors text-red-500 hover:bg-red-50"
-                style={{ border: '1px solid #fecaca' }}
-              >
-                <Trash2 size={14} />
-                {t('settings.deleteAccount')}
-              </button>
+              {!trustedMode && (
+                <button
+                  onClick={async () => {
+                    if (user?.role === 'admin') {
+                      try {
+                        await adminApi.stats()
+                        const adminUsers = (await adminApi.users()).users.filter(u => u.role === 'admin')
+                        if (adminUsers.length <= 1) {
+                          setShowDeleteConfirm('blocked')
+                          return
+                        }
+                      } catch {}
+                    }
+                    setShowDeleteConfirm(true)
+                  }}
+                  className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors text-red-500 hover:bg-red-50"
+                  style={{ border: '1px solid #fecaca' }}
+                >
+                  <Trash2 size={14} />
+                  {t('settings.deleteAccount')}
+                </button>
+              )}
             </div>
           </Section>
 

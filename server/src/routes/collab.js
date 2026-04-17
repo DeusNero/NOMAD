@@ -1,4 +1,5 @@
 const express = require('express');
+const fetch = require('node-fetch');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
@@ -6,6 +7,8 @@ const { v4: uuidv4 } = require('uuid');
 const { db, canAccessTrip } = require('../db/database');
 const { authenticate } = require('../middleware/auth');
 const { broadcast } = require('../websocket');
+const { DEFAULT_ALLOWED_EXTENSIONS, isAllowedUploadType } = require('../utils/uploadSecurity');
+const { assertSafeOutboundUrl } = require('../utils/ssrfGuard');
 
 const filesDir = path.join(__dirname, '../../uploads/files');
 const noteUpload = multer({
@@ -14,6 +17,12 @@ const noteUpload = multer({
     filename: (req, file, cb) => { cb(null, `${uuidv4()}${path.extname(file.originalname)}`) },
   }),
   limits: { fileSize: 50 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (isAllowedUploadType(file.originalname, file.mimetype, DEFAULT_ALLOWED_EXTENSIONS)) {
+      return cb(null, true);
+    }
+    return cb(new Error('File type not allowed'));
+  },
 });
 
 const router = express.Router({ mergeParams: true });
@@ -439,48 +448,77 @@ router.delete('/messages/:id', authenticate, (req, res) => {
 // ─── LINK PREVIEW ────────────────────────────────────────────────────────────
 
 router.get('/link-preview', authenticate, (req, res) => {
+  const { tripId } = req.params;
   const { url } = req.query;
   if (!url) return res.status(400).json({ error: 'URL is required' });
+  if (!verifyTripAccess(Number(tripId), req.user.id)) return res.status(404).json({ error: 'Trip not found' });
 
-  try {
-    const fetch = require('node-fetch');
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
 
-    fetch(url, {
-      signal: controller.signal,
-      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; NOMAD/1.0; +https://github.com/mauriceboe/NOMAD)' },
-    })
-      .then(r => {
-        clearTimeout(timeout);
-        if (!r.ok) throw new Error('Fetch failed');
-        return r.text();
-      })
-      .then(html => {
-        const get = (prop) => {
-          const m = html.match(new RegExp(`<meta[^>]*property=["']og:${prop}["'][^>]*content=["']([^"']*)["']`, 'i'))
-            || html.match(new RegExp(`<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:${prop}["']`, 'i'));
-          return m ? m[1] : null;
-        };
-        const titleTag = html.match(/<title[^>]*>([^<]*)<\/title>/i);
-        const descMeta = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']*)["']/i)
-          || html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*name=["']description["']/i);
+  fetchLinkPreview(url, controller.signal)
+    .then(({ html, finalUrl }) => {
+      clearTimeout(timeout);
+      const get = (prop) => {
+        const m = html.match(new RegExp(`<meta[^>]*property=["']og:${prop}["'][^>]*content=["']([^"']*)["']`, 'i'))
+          || html.match(new RegExp(`<meta[^>]*content=["']([^"']*)["'][^>]*property=["']og:${prop}["']`, 'i'));
+        return m ? m[1] : null;
+      };
+      const titleTag = html.match(/<title[^>]*>([^<]*)<\/title>/i);
+      const descMeta = html.match(/<meta[^>]*name=["']description["'][^>]*content=["']([^"']*)["']/i)
+        || html.match(/<meta[^>]*content=["']([^"']*)["'][^>]*name=["']description["']/i);
 
-        res.json({
-          title: get('title') || (titleTag ? titleTag[1].trim() : null),
-          description: get('description') || (descMeta ? descMeta[1].trim() : null),
-          image: get('image') || null,
-          site_name: get('site_name') || null,
-          url,
-        });
-      })
-      .catch(() => {
-        clearTimeout(timeout);
-        res.json({ title: null, description: null, image: null, url });
+      res.json({
+        title: get('title') || (titleTag ? titleTag[1].trim() : null),
+        description: get('description') || (descMeta ? descMeta[1].trim() : null),
+        image: get('image') || null,
+        site_name: get('site_name') || null,
+        url: finalUrl,
       });
-  } catch {
-    res.json({ title: null, description: null, image: null, url });
-  }
+    })
+    .catch(() => {
+      clearTimeout(timeout);
+      res.json({ title: null, description: null, image: null, url });
+    });
 });
+
+const MAX_PREVIEW_REDIRECTS = 3;
+const MAX_PREVIEW_BYTES = 512 * 1024;
+
+async function fetchLinkPreview(rawUrl, signal, redirectCount = 0) {
+  if (redirectCount > MAX_PREVIEW_REDIRECTS) {
+    throw new Error('Too many redirects');
+  }
+
+  const safeUrl = await assertSafeOutboundUrl(rawUrl);
+  const response = await fetch(safeUrl, {
+    signal,
+    redirect: 'manual',
+    headers: {
+      Accept: 'text/html, text/plain;q=0.8, */*;q=0.1',
+      'User-Agent': 'Mozilla/5.0 (compatible; NOMAD/1.0; +https://github.com/mauriceboe/NOMAD)',
+    },
+  });
+
+  if ([301, 302, 303, 307, 308].includes(response.status)) {
+    const location = response.headers.get('location');
+    if (!location) throw new Error('Redirect location missing');
+    const nextUrl = new URL(location, safeUrl);
+    return fetchLinkPreview(nextUrl.toString(), signal, redirectCount + 1);
+  }
+
+  if (!response.ok) throw new Error('Fetch failed');
+  if (!String(response.headers.get('content-type') || '').toLowerCase().includes('text/')) {
+    throw new Error('Unsupported preview content');
+  }
+
+  const contentLength = Number(response.headers.get('content-length') || 0);
+  if (contentLength > MAX_PREVIEW_BYTES) {
+    throw new Error('Preview response too large');
+  }
+
+  const html = (await response.text()).slice(0, MAX_PREVIEW_BYTES);
+  return { html, finalUrl: safeUrl.toString() };
+}
 
 module.exports = router;

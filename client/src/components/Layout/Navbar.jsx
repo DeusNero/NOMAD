@@ -10,7 +10,7 @@ import { Plane, LogOut, Settings, ChevronDown, Shield, ArrowLeft, Users, Moon, S
 const ADDON_ICONS = { CalendarDays, Briefcase, Globe }
 
 export default function Navbar({ tripTitle, tripId, onBack, showBack, onShare }) {
-  const { user, logout } = useAuthStore()
+  const { user, logout, trustedMode } = useAuthStore()
   const { settings, updateSetting } = useSettingsStore()
   const { t, locale } = useTranslation()
   const navigate = useNavigate()
@@ -176,7 +176,9 @@ export default function Navbar({ tripTitle, tripId, onBack, showBack, onShare })
               <div className="w-52 rounded-xl shadow-xl border overflow-hidden" style={{ position: 'fixed', top: 'var(--nav-h)', right: 8, zIndex: 9999, background: 'var(--bg-card)', borderColor: 'var(--border-primary)' }}>
                 <div className="px-4 py-3 border-b" style={{ borderColor: 'var(--border-secondary)' }}>
                   <p className="text-sm font-medium" style={{ color: 'var(--text-primary)' }}>{user.username}</p>
-                  <p className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>{user.email}</p>
+                  <p className="text-xs truncate" style={{ color: 'var(--text-muted)' }}>
+                    {trustedMode ? 'Trusted mode' : user.email}
+                  </p>
                   {user.role === 'admin' && (
                     <span className="inline-flex items-center gap-1 text-xs font-medium mt-1" style={{ color: 'var(--text-secondary)' }}>
                       <Shield className="w-3 h-3" /> {t('nav.administrator')}
@@ -207,11 +209,13 @@ export default function Navbar({ tripTitle, tripId, onBack, showBack, onShare })
                 </div>
 
                 <div className="py-1 border-t" style={{ borderColor: 'var(--border-secondary)' }}>
-                  <button onClick={handleLogout}
-                    className="flex items-center gap-2 w-full px-4 py-2 text-sm text-red-500 hover:bg-red-500/10 transition-colors">
-                    <LogOut className="w-4 h-4" />
-                    {t('nav.logout')}
-                  </button>
+                  {!trustedMode && (
+                    <button onClick={handleLogout}
+                      className="flex items-center gap-2 w-full px-4 py-2 text-sm text-red-500 hover:bg-red-500/10 transition-colors">
+                      <LogOut className="w-4 h-4" />
+                      {t('nav.logout')}
+                    </button>
+                  )}
                   {appVersion && (
                     <div className="px-4 pt-2 pb-2.5 text-center" style={{ marginTop: 4, borderTop: '1px solid var(--border-secondary)' }}>
                       <div style={{ display: 'inline-flex', alignItems: 'center', gap: 5, background: 'var(--bg-tertiary)', borderRadius: 99, padding: '4px 12px' }}>

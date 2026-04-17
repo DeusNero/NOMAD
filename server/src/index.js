@@ -4,6 +4,7 @@ const cors = require('cors');
 const helmet = require('helmet');
 const path = require('path');
 const fs = require('fs');
+const { setUploadSecurityHeaders } = require('./utils/uploadSecurity');
 
 const app = express();
 
@@ -50,8 +51,10 @@ app.use(helmet({
 app.use(express.json({ limit: '100kb' }));
 app.use(express.urlencoded({ extended: true }));
 
-// Serve uploaded files
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+// Serve uploaded files with anti-sniffing and download-only protection for active content
+app.use('/uploads', express.static(path.join(__dirname, '../uploads'), {
+  setHeaders: (res, filePath) => setUploadSecurityHeaders(res, filePath),
+}));
 
 // Routes
 const authRoutes = require('./routes/auth');

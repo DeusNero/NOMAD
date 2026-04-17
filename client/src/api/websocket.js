@@ -7,6 +7,7 @@ const MAX_RECONNECT_DELAY = 30000
 const listeners = new Set()
 const activeTrips = new Set()
 let currentToken = null
+let shouldReconnect = false
 let refetchCallback = null
 let mySocketId = null
 
@@ -20,7 +21,8 @@ export function setRefetchCallback(fn) {
 
 function getWsUrl(token) {
   const protocol = location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${protocol}://${location.host}/ws?token=${token}`
+  const base = `${protocol}://${location.host}/ws`
+  return token ? `${base}?token=${encodeURIComponent(token)}` : base
 }
 
 function handleMessage(event) {
@@ -43,7 +45,7 @@ function scheduleReconnect() {
   if (reconnectTimer) return
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null
-    if (currentToken) {
+    if (shouldReconnect) {
       connectInternal(currentToken, true)
     }
   }, reconnectDelay)
@@ -84,7 +86,7 @@ function connectInternal(token, isReconnect = false) {
 
   socket.onclose = () => {
     socket = null
-    if (currentToken) {
+    if (shouldReconnect) {
       scheduleReconnect()
     }
   }
@@ -95,7 +97,8 @@ function connectInternal(token, isReconnect = false) {
 }
 
 export function connect(token) {
-  currentToken = token
+  currentToken = token ?? null
+  shouldReconnect = true
   reconnectDelay = 1000
   if (reconnectTimer) {
     clearTimeout(reconnectTimer)
@@ -106,6 +109,7 @@ export function connect(token) {
 
 export function disconnect() {
   currentToken = null
+  shouldReconnect = false
   if (reconnectTimer) {
     clearTimeout(reconnectTimer)
     reconnectTimer = null

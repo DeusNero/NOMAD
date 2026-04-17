@@ -273,6 +273,8 @@ router.get('/:id/members', authenticate, (req, res) => {
 router.post('/:id/members', authenticate, (req, res) => {
   if (!canAccessTrip(req.params.id, req.user.id))
     return res.status(404).json({ error: 'Trip not found' });
+  if (!isOwner(req.params.id, req.user.id))
+    return res.status(403).json({ error: 'Only the owner can add members' });
 
   const { identifier } = req.body; // email or username
   if (!identifier) return res.status(400).json({ error: 'Email or username required' });

@@ -17,7 +17,7 @@ export default function LoginPage() {
   const [error, setError] = useState('')
   const [appConfig, setAppConfig] = useState(null)
 
-  const { login, register, demoLogin } = useAuthStore()
+  const { login, register, demoLogin, trustedMode, isAuthenticated, isLoading: authLoading } = useAuthStore()
   const { setLanguageLocal } = useSettingsStore()
   const navigate = useNavigate()
 
@@ -53,6 +53,12 @@ export default function LoginPage() {
       window.history.replaceState({}, '', '/login')
     }
   }, [])
+
+  useEffect(() => {
+    if (trustedMode && isAuthenticated && !authLoading) {
+      navigate('/dashboard', { replace: true })
+    }
+  }, [trustedMode, isAuthenticated, authLoading, navigate])
 
   const handleDemoLogin = async () => {
     setError('')

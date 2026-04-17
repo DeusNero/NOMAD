@@ -52,11 +52,10 @@
 - **Document Manager** — Attach documents, tickets, and PDFs to trips, places, or reservations (up to 50 MB per file)
 - **PDF Export** — Export complete trip plans as PDF with cover page, images, notes, and NOMAD branding
 
-### Mobile & PWA
-- **Progressive Web App** — Install on iOS and Android directly from the browser, no App Store needed
-- **Offline Support** — Service Worker caches map tiles, API data, uploads, and static assets via Workbox
-- **Native App Feel** — Fullscreen standalone mode, custom app icon, themed status bar, and splash screen
-- **Touch Optimized** — Responsive design with mobile-specific layouts, touch-friendly controls, and safe area handling
+### Mobile
+- **Responsive UI** — Works well in desktop and mobile browsers with touch-friendly controls and safe area handling
+- **Home Screen Friendly** — Can still be pinned as a regular browser shortcut on phones and tablets
+- **Shared Household Setup** — Trusted mode is designed for small private deployments without in-app login
 
 ### Collaboration
 - **Real-Time Sync** — Plan together via WebSocket — changes appear instantly across all connected users
@@ -81,7 +80,7 @@
 
 - **Backend**: Node.js 22 + Express + SQLite (`better-sqlite3`)
 - **Frontend**: React 18 + Vite + Tailwind CSS
-- **PWA**: vite-plugin-pwa + Workbox
+- **Client Delivery**: Standard Vite build served by the Node app or a reverse proxy
 - **Real-Time**: WebSocket (`ws`)
 - **State**: Zustand
 - **Auth**: JWT + OIDC
@@ -95,16 +94,44 @@
 docker run -d -p 3000:3000 -v ./data:/app/data -v ./uploads:/app/uploads mauriceboe/nomad
 ```
 
-The app runs on port `3000`. The first user to register becomes the admin.
+The app runs on port `3000`.
 
-### Install as App (PWA)
+For the default authenticated setup, first-run registration is locked down by default. Temporarily enable bootstrap registration, create your admin account, and then turn it back off:
 
-NOMAD works as a Progressive Web App — no App Store needed:
+```bash
+docker run -d -p 3000:3000 \
+  -e ALLOW_BOOTSTRAP_REGISTRATION=true \
+  -v ./data:/app/data \
+  -v ./uploads:/app/uploads \
+  mauriceboe/nomad
+```
 
-1. Open your NOMAD instance in the browser (HTTPS required)
-2. **iOS**: Share button → "Add to Home Screen"
-3. **Android**: Menu → "Install app" or "Add to Home Screen"
-4. NOMAD launches fullscreen with its own icon, just like a native app
+After your first admin account exists, remove `ALLOW_BOOTSTRAP_REGISTRATION=true` on the next restart.
+
+### Trusted Mode (no in-app login)
+
+For private household setups you can run NOMAD without the login screen by enabling trusted mode:
+
+```bash
+docker run -d -p 3000:3000 \
+  -e TRUSTED_MODE=true \
+  -e TRUSTED_NAME="Household" \
+  -v ./data:/app/data \
+  -v ./uploads:/app/uploads \
+  mauriceboe/nomad
+```
+
+Trusted mode automatically uses a single local admin account and disables login, registration, and OIDC flows inside the app.
+
+> **Important:** Trusted mode is only safe on a private LAN or behind external access control such as Cloudflare Access or Tailscale. Do not expose a public domain directly with no outer authentication layer.
+
+### Browser Shortcut
+
+NOMAD is now delivered as a standard web app rather than a service-worker-backed PWA. If you want quicker access on mobile, create a normal browser shortcut:
+
+1. Open your NOMAD instance in the browser
+2. Use the browser's "Add to Home Screen" or "Create shortcut" option
+3. Launch it from the shortcut like any other saved web app
 
 <details>
 <summary>Docker Compose (recommended for production)</summary>

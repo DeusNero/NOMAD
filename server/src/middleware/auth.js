@@ -1,10 +1,19 @@
 const jwt = require('jsonwebtoken');
-const { db } = require('../db/database');
-const { JWT_SECRET } = require('../config');
+const { db, getTrustedUser } = require('../db/database');
+const { JWT_SECRET, TRUSTED_MODE } = require('../config');
 
 const authenticate = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token && TRUSTED_MODE) {
+    const trustedUser = getTrustedUser();
+    if (!trustedUser) {
+      return res.status(500).json({ error: 'Trusted mode user not available' });
+    }
+    req.user = trustedUser;
+    return next();
+  }
 
   if (!token) {
     return res.status(401).json({ error: 'Access token required' });
@@ -28,6 +37,11 @@ const authenticate = (req, res, next) => {
 const optionalAuth = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token && TRUSTED_MODE) {
+    req.user = getTrustedUser();
+    return next();
+  }
 
   if (!token) {
     req.user = null;

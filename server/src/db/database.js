@@ -2,6 +2,8 @@ const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
+const { TRUSTED_EMAIL, TRUSTED_MODE, TRUSTED_NAME } = require('../config');
 
 const dataDir = path.join(__dirname, '../../data');
 if (!fs.existsSync(dataDir)) {
@@ -665,6 +667,10 @@ function initDb() {
   } catch (err) {
     console.error('Error seeding addons:', err.message);
   }
+
+  if (TRUSTED_MODE) {
+    ensureTrustedUser();
+  }
 }
 
 // Initialize on module load
@@ -711,6 +717,31 @@ function reinitialize() {
   console.log('[DB] Database reinitialized successfully');
 }
 
+function ensureTrustedUser() {
+  const existing = _db.prepare('SELECT id FROM users WHERE LOWER(email) = LOWER(?)').get(TRUSTED_EMAIL);
+  if (existing) {
+    _db.prepare(
+      'UPDATE users SET username = ?, role = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
+    ).run(TRUSTED_NAME, 'admin', existing.id);
+    return Number(existing.id);
+  }
+
+  const randomPass = bcrypt.hashSync(crypto.randomBytes(32).toString('hex'), 10);
+  const result = _db.prepare(
+    'INSERT INTO users (username, email, password_hash, role) VALUES (?, ?, ?, ?)'
+  ).run(TRUSTED_NAME, TRUSTED_EMAIL, randomPass, 'admin');
+  console.log('[DB] Trusted mode user created');
+  return Number(result.lastInsertRowid);
+}
+
+function getTrustedUser() {
+  if (!TRUSTED_MODE) return null;
+  ensureTrustedUser();
+  return _db.prepare(
+    'SELECT id, username, email, role, maps_api_key, unsplash_api_key, openweather_api_key FROM users WHERE LOWER(email) = LOWER(?)'
+  ).get(TRUSTED_EMAIL);
+}
+
 function getPlaceWithTags(placeId) {
   const place = _db.prepare(`
     SELECT p.*, c.name as category_name, c.color as category_color, c.icon as category_icon
@@ -751,4 +782,4 @@ function isOwner(tripId, userId) {
   return !!_db.prepare('SELECT id FROM trips WHERE id = ? AND user_id = ?').get(tripId, userId);
 }
 
-module.exports = { db, closeDb, reinitialize, getPlaceWithTags, canAccessTrip, isOwner };
+module.exports = { db, closeDb, reinitialize, getPlaceWithTags, canAccessTrip, getTrustedUser, isOwner };

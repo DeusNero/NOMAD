@@ -6,6 +6,7 @@ const { v4: uuidv4 } = require('uuid');
 const { db, canAccessTrip } = require('../db/database');
 const { authenticate, demoUploadBlock } = require('../middleware/auth');
 const { broadcast } = require('../websocket');
+const { DEFAULT_ALLOWED_EXTENSIONS, isAllowedUploadType } = require('../utils/uploadSecurity');
 
 const router = express.Router({ mergeParams: true });
 
@@ -22,9 +23,6 @@ const storage = multer.diskStorage({
   },
 });
 
-const DEFAULT_ALLOWED_EXTENSIONS = 'jpg,jpeg,png,gif,webp,heic,pdf,doc,docx,xls,xlsx,txt,csv';
-const BLOCKED_EXTENSIONS = ['.svg', '.html', '.htm', '.xml'];
-
 function getAllowedExtensions() {
   try {
     const row = db.prepare("SELECT value FROM app_settings WHERE key = 'allowed_file_types'").get();
@@ -36,13 +34,7 @@ const upload = multer({
   storage,
   limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
   fileFilter: (req, file, cb) => {
-    const ext = path.extname(file.originalname).toLowerCase();
-    if (BLOCKED_EXTENSIONS.includes(ext) || file.mimetype.includes('svg')) {
-      return cb(new Error('File type not allowed'));
-    }
-    const allowed = getAllowedExtensions().split(',').map(e => e.trim().toLowerCase());
-    const fileExt = ext.replace('.', '');
-    if (allowed.includes(fileExt) || (allowed.includes('*') && !BLOCKED_EXTENSIONS.includes(ext))) {
+    if (isAllowedUploadType(file.originalname, file.mimetype, getAllowedExtensions())) {
       cb(null, true);
     } else {
       cb(new Error('File type not allowed'));
