@@ -3,6 +3,10 @@ const fs = require('fs');
 const path = require('path');
 
 let JWT_SECRET = process.env.JWT_SECRET;
+const TRUSTED_MODE = process.env.TRUSTED_MODE === 'true';
+const TRUSTED_NAME = (process.env.TRUSTED_NAME || 'Household').trim() || 'Household';
+const TRUSTED_EMAIL = 'trusted@nomad.local';
+const ALLOW_BOOTSTRAP_REGISTRATION = process.env.ALLOW_BOOTSTRAP_REGISTRATION === 'true';
 
 if (!JWT_SECRET) {
   // Try to read a persisted secret from disk
@@ -25,4 +29,10 @@ if (!JWT_SECRET) {
   }
 }
 
-module.exports = { JWT_SECRET };
+module.exports = {
+  ALLOW_BOOTSTRAP_REGISTRATION,
+  JWT_SECRET,
+  TRUSTED_EMAIL,
+  TRUSTED_MODE,
+  TRUSTED_NAME,
+};

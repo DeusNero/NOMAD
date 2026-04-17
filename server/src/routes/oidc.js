@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const fetch = require('node-fetch');
 const jwt = require('jsonwebtoken');
 const { db } = require('../db/database');
-const { JWT_SECRET } = require('../config');
+const { JWT_SECRET, TRUSTED_MODE } = require('../config');
 
 const router = express.Router();
 
@@ -63,6 +63,7 @@ function frontendUrl(path) {
 
 // GET /api/auth/oidc/login — redirect to OIDC provider
 router.get('/login', async (req, res) => {
+  if (TRUSTED_MODE) return res.status(403).json({ error: 'OIDC is disabled in trusted mode' });
   const config = getOidcConfig();
   if (!config) return res.status(400).json({ error: 'OIDC not configured' });
 
@@ -92,6 +93,7 @@ router.get('/login', async (req, res) => {
 
 // GET /api/auth/oidc/callback — handle provider callback
 router.get('/callback', async (req, res) => {
+  if (TRUSTED_MODE) return res.redirect(frontendUrl('/login?oidc_error=disabled'));
   const { code, state, error: oidcError } = req.query;
 
   if (oidcError) {

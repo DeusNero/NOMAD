@@ -1,7 +1,7 @@
 const { WebSocketServer } = require('ws');
 const jwt = require('jsonwebtoken');
-const { JWT_SECRET } = require('./config');
-const { db, canAccessTrip } = require('./db/database');
+const { JWT_SECRET, TRUSTED_MODE } = require('./config');
+const { db, canAccessTrip, getTrustedUser } = require('./db/database');
 
 // Room management: tripId → Set<WebSocket>
 const rooms = new Map();
@@ -37,24 +37,30 @@ function setupWebSocket(server) {
     const url = new URL(req.url, 'http://localhost');
     const token = url.searchParams.get('token');
 
-    if (!token) {
-      ws.close(4001, 'Authentication required');
-      return;
-    }
-
     let user;
-    try {
-      const decoded = jwt.verify(token, JWT_SECRET);
-      user = db.prepare(
-        'SELECT id, username, email, role FROM users WHERE id = ?'
-      ).get(decoded.id);
+    if (!token && TRUSTED_MODE) {
+      user = getTrustedUser();
       if (!user) {
-        ws.close(4001, 'User not found');
+        ws.close(1011, 'Trusted mode user not available');
         return;
       }
-    } catch (err) {
-      ws.close(4001, 'Invalid or expired token');
+    } else if (!token) {
+      ws.close(4001, 'Authentication required');
       return;
+    } else {
+      try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        user = db.prepare(
+          'SELECT id, username, email, role FROM users WHERE id = ?'
+        ).get(decoded.id);
+        if (!user) {
+          ws.close(4001, 'User not found');
+          return;
+        }
+      } catch (err) {
+        ws.close(4001, 'Invalid or expired token');
+        return;
+      }
     }
 
     ws.isAlive = true;

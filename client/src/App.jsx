@@ -15,7 +15,6 @@ import AtlasPage from './pages/AtlasPage'
 import { ToastContainer } from './components/shared/Toast'
 import { TranslationProvider, useTranslation } from './i18n'
 import DemoBanner from './components/Layout/DemoBanner'
-import { authApi } from './api/client'
 
 function ProtectedRoute({ children, adminRequired = false }) {
   const { isAuthenticated, user, isLoading } = useAuthStore()
@@ -58,17 +57,11 @@ function RootRedirect() {
 }
 
 export default function App() {
-  const { loadUser, token, isAuthenticated, demoMode, setDemoMode, setHasMapsKey } = useAuthStore()
+  const { initialize, isAuthenticated } = useAuthStore()
   const { loadSettings } = useSettingsStore()
 
   useEffect(() => {
-    if (token) {
-      loadUser()
-    }
-    authApi.getAppConfig().then(config => {
-      if (config?.demo_mode) setDemoMode(true)
-      if (config?.has_maps_key !== undefined) setHasMapsKey(config.has_maps_key)
-    }).catch(() => {})
+    initialize()
   }, [])
 
   const { settings } = useSettingsStore()
