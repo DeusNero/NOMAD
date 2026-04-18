@@ -15,9 +15,9 @@ const {
   ensureReadableDirectory,
   extractAnthropicText,
   extractGeminiText,
-  findVaultFileByBasename,
   isPathInside,
   rankKnowledgebaseCandidates,
+  resolveVaultReference,
   sanitizeUploadFilename,
   tokenizeSearchTerms,
 } = require('../utils/knowledgebase');
@@ -134,20 +134,21 @@ function formatMessage(row) {
     citations: parseCitations(row.citations),
     created_at: row.created_at,
     user_id: row.user_id || null,
-    username: row.username || 'Knowledgebase',
+    username: row.role === 'assistant' ? 'Knowledgebase' : (row.username || 'Unknown'),
     avatar_url: row.role === 'assistant' ? null : avatarUrl(row),
   };
 }
 
-function loadMessages(tripId, limit = 100) {
+function loadMessages(tripId, userId, limit = 100) {
   const rows = db.prepare(`
     SELECT km.*, u.username, u.avatar
     FROM knowledgebase_messages km
     LEFT JOIN users u ON km.user_id = u.id
     WHERE km.trip_id = ?
+      AND km.user_id = ?
     ORDER BY km.id DESC
     LIMIT ?
-  `).all(tripId, limit);
+  `).all(tripId, userId, limit);
 
   return rows.reverse().map(formatMessage);
 }
@@ -170,7 +171,7 @@ function insertKnowledgebaseExchange({ tripId, userId, question, assistantConten
   const userInsert = insertMessage.run(tripId, userId, 'user', question, null, null, null);
   const assistantInsert = insertMessage.run(
     tripId,
-    null,
+    userId,
     'assistant',
     assistantContent,
     provider,
@@ -455,61 +456,12 @@ async function generateAnswer(provider, model, apiKey, prompt) {
   throw new Error('Unsupported provider');
 }
 
-function normalizeVaultRelativePath(relativePath) {
-  return String(relativePath || '')
-    .replace(/\\/g, '/')
-    .replace(/^\/+/, '')
-    .trim();
-}
-
-function resolveKnowledgebaseAsset(config, sourceRelativePath, assetReference) {
-  const vaultPath = ensureReadableDirectory(config.vault_path);
-  const normalizedSource = normalizeVaultRelativePath(sourceRelativePath);
-  const normalizedAsset = String(assetReference || '')
-    .trim()
-    .replace(/^<|>$/g, '')
-    .replace(/\\/g, '/')
-    .replace(/^\/+/, '')
-    .split('|')[0]
-    .trim();
-
-  if (!normalizedAsset) throw new Error('Asset path is required');
-
-  const noteDir = normalizedSource ? path.posix.dirname(normalizedSource) : '';
-  const candidatePaths = [];
-
-  if (noteDir && noteDir !== '.') {
-    candidatePaths.push(path.resolve(vaultPath, noteDir, normalizedAsset));
-  }
-  candidatePaths.push(path.resolve(vaultPath, normalizedAsset));
-
-  for (const absolutePath of candidatePaths) {
-    if (!isPathInside(vaultPath, absolutePath)) continue;
-    const stat = fs.statSync(absolutePath, { throwIfNoEntry: false });
-    if (stat?.isFile()) {
-      return {
-        absolutePath,
-        relativePath: path.relative(vaultPath, absolutePath).split(path.sep).join('/'),
-      };
-    }
-  }
-
-  if (!normalizedAsset.includes('/')) {
-    const byBasename = findVaultFileByBasename(vaultPath, normalizedAsset);
-    if (byBasename && isPathInside(vaultPath, byBasename)) {
-      return {
-        absolutePath: byBasename,
-        relativePath: path.relative(vaultPath, byBasename).split(path.sep).join('/'),
-      };
-    }
-  }
-
-  throw new Error('Asset file not found');
-}
-
 function loadKnowledgebaseSource(config, relativePath) {
   const vaultPath = ensureReadableDirectory(config.vault_path);
-  const normalizedRelativePath = normalizeVaultRelativePath(relativePath);
+  const normalizedRelativePath = String(relativePath || '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .trim();
 
   if (!normalizedRelativePath) throw new Error('Source path is required');
 
@@ -531,6 +483,18 @@ function loadKnowledgebaseSource(config, relativePath) {
   };
 }
 
+function resolveKnowledgebaseSourceReference(config, sourceRelativePath, rawReference) {
+  const resolved = resolveVaultReference(config.vault_path, sourceRelativePath, rawReference, { preferMarkdown: true });
+  return {
+    ...loadKnowledgebaseSource(config, resolved.relativePath),
+    focus_heading: resolved.focusHeading,
+  };
+}
+
+function resolveKnowledgebaseAsset(config, sourceRelativePath, assetReference) {
+  return resolveVaultReference(config.vault_path, sourceRelativePath, assetReference, { preferMarkdown: false });
+}
+
 router.get('/', authenticate, (req, res) => {
   const tripId = Number(req.params.tripId);
   if (!verifyTripAccess(tripId, req.user.id)) return res.status(404).json({ error: 'Trip not found' });
@@ -547,7 +511,7 @@ router.get('/', authenticate, (req, res) => {
       has_gemini_key: !!keys.gemini_api_key,
       has_anthropic_key: !!keys.anthropic_api_key,
     },
-    messages: loadMessages(tripId),
+    messages: loadMessages(tripId, req.user.id),
   });
 });
 
@@ -646,7 +610,7 @@ router.post('/query', authenticate, async (req, res) => {
       return;
     }
 
-    const history = loadMessages(tripId, 8).map(message => ({
+    const history = loadMessages(tripId, req.user.id, 8).map(message => ({
       role: message.role,
       content: message.content,
     }));
@@ -687,7 +651,9 @@ router.get('/source', authenticate, (req, res) => {
     const config = getKnowledgebaseConfig(tripId);
     if (!config) return res.status(400).json({ error: 'Knowledgebase is not configured yet' });
 
-    const source = loadKnowledgebaseSource(config, req.query.path);
+    const source = req.query.reference
+      ? resolveKnowledgebaseSourceReference(config, req.query.source, req.query.reference)
+      : loadKnowledgebaseSource(config, req.query.path);
     res.json(source);
   } catch (err) {
     res.status(400).json({ error: err.message || 'Failed to open knowledgebase source' });

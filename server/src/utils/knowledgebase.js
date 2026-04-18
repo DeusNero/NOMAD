@@ -90,6 +90,50 @@ function normalizeAbsolutePath(input) {
   return path.normalize(trimmed);
 }
 
+function normalizeVaultRelativePath(input) {
+  return String(input || '')
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .trim();
+}
+
+function normalizeVaultReferenceTarget(input) {
+  return String(input || '')
+    .trim()
+    .replace(/^<|>$/g, '')
+    .replace(/^['"]+|['"]+$/g, '')
+    .trim();
+}
+
+function parseVaultReference(input) {
+  const withoutAlias = normalizeVaultReferenceTarget(input)
+    .replace(/^!\[\[|\[\[/, '')
+    .replace(/\]\]$/, '')
+    .split('|')[0]
+    .trim();
+
+  if (!withoutAlias) {
+    return { reference: '', focusHeading: null };
+  }
+
+  const hashIndex = withoutAlias.indexOf('#');
+  if (hashIndex === -1) {
+    return { reference: withoutAlias, focusHeading: null };
+  }
+
+  const reference = withoutAlias.slice(0, hashIndex).trim();
+  const focusHeading = withoutAlias.slice(hashIndex + 1).trim() || null;
+  return { reference, focusHeading };
+}
+
+function isLikelyMarkdownNoteReference(input) {
+  const { reference } = parseVaultReference(input);
+  if (!reference || /^https?:\/\//i.test(reference)) return false;
+  const normalized = normalizeVaultRelativePath(reference);
+  const ext = path.posix.extname(normalized).toLowerCase();
+  return !ext || ext === '.md';
+}
+
 function ensureReadableDirectory(dirPath) {
   const normalized = normalizeAbsolutePath(dirPath);
   if (!normalized) throw new Error('Path must be absolute');
@@ -253,6 +297,68 @@ function findVaultFileByBasename(rootDir, targetName) {
   }
 
   return null;
+}
+
+function resolveVaultReference(rootDir, sourceRelativePath, rawReference, options = {}) {
+  const {
+    preferMarkdown = false,
+  } = options;
+  const vaultPath = ensureReadableDirectory(rootDir);
+  const normalizedSourcePath = normalizeVaultRelativePath(sourceRelativePath);
+  const { reference, focusHeading } = parseVaultReference(rawReference);
+  const normalizedReference = normalizeVaultRelativePath(reference);
+
+  if (!normalizedReference) throw new Error('Reference path is required');
+
+  const ext = path.posix.extname(normalizedReference).toLowerCase();
+  const candidateRefs = [];
+
+  if (preferMarkdown && !ext) {
+    candidateRefs.push(`${normalizedReference}.md`);
+  }
+  candidateRefs.push(normalizedReference);
+
+  const noteDir = normalizedSourcePath ? path.posix.dirname(normalizedSourcePath) : '';
+  const absoluteCandidates = [];
+
+  for (const candidateRef of candidateRefs) {
+    if (noteDir && noteDir !== '.') {
+      absoluteCandidates.push(path.resolve(vaultPath, noteDir, candidateRef));
+    }
+    absoluteCandidates.push(path.resolve(vaultPath, candidateRef));
+  }
+
+  for (const absolutePath of absoluteCandidates) {
+    if (!isPathInside(vaultPath, absolutePath)) continue;
+
+    const stat = fs.statSync(absolutePath, { throwIfNoEntry: false });
+    if (!stat?.isFile()) continue;
+    if (preferMarkdown && path.extname(absolutePath).toLowerCase() !== '.md') continue;
+
+    return {
+      absolutePath,
+      relativePath: path.relative(vaultPath, absolutePath).split(path.sep).join('/'),
+      focusHeading,
+    };
+  }
+
+  if (!normalizedReference.includes('/')) {
+    const basenames = [...new Set(candidateRefs.map(ref => path.posix.basename(ref)))];
+
+    for (const basename of basenames) {
+      const byBasename = findVaultFileByBasename(vaultPath, basename);
+      if (!byBasename || !isPathInside(vaultPath, byBasename)) continue;
+      if (preferMarkdown && path.extname(byBasename).toLowerCase() !== '.md') continue;
+
+      return {
+        absolutePath: byBasename,
+        relativePath: path.relative(vaultPath, byBasename).split(path.sep).join('/'),
+        focusHeading,
+      };
+    }
+  }
+
+  throw new Error(preferMarkdown ? 'Source file not found' : 'Asset file not found');
 }
 
 function buildFtsQuery(text) {
@@ -451,8 +557,13 @@ module.exports = {
   extractGeminiText,
   findVaultFileByBasename,
   isPathInside,
+  isLikelyMarkdownNoteReference,
   normalizeAbsolutePath,
+  normalizeVaultReferenceTarget,
+  normalizeVaultRelativePath,
+  parseVaultReference,
   rankKnowledgebaseCandidates,
+  resolveVaultReference,
   scoreKnowledgebaseCandidate,
   sanitizeUploadFilename,
   tokenizeSearchTerms,

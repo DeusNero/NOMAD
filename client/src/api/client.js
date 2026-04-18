@@ -230,6 +230,9 @@ export const knowledgebaseApi = {
   getSource: (tripId, relativePath) => apiClient.get(`/trips/${tripId}/knowledgebase/source`, {
     params: { path: relativePath }
   }).then(r => r.data),
+  resolveSource: (tripId, sourcePath, reference) => apiClient.get(`/trips/${tripId}/knowledgebase/source`, {
+    params: { source: sourcePath, reference }
+  }).then(r => r.data),
   getAssetBlob: (tripId, sourcePath, assetPath) => apiClient.get(`/trips/${tripId}/knowledgebase/asset`, {
     params: { source: sourcePath, asset: assetPath },
     responseType: 'blob',

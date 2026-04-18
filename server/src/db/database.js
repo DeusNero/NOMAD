@@ -418,6 +418,7 @@ function initDb() {
     CREATE INDEX IF NOT EXISTS idx_collab_polls_trip ON collab_polls(trip_id);
     CREATE INDEX IF NOT EXISTS idx_collab_messages_trip ON collab_messages(trip_id);
     CREATE INDEX IF NOT EXISTS idx_knowledgebase_messages_trip ON knowledgebase_messages(trip_id);
+    CREATE INDEX IF NOT EXISTS idx_knowledgebase_messages_trip_user ON knowledgebase_messages(trip_id, user_id);
     CREATE INDEX IF NOT EXISTS idx_knowledgebase_chunks_trip ON knowledgebase_chunks(trip_id);
   `);
 
@@ -718,11 +719,30 @@ function initDb() {
           relative_path
         );
         CREATE INDEX IF NOT EXISTS idx_knowledgebase_messages_trip ON knowledgebase_messages(trip_id);
+        CREATE INDEX IF NOT EXISTS idx_knowledgebase_messages_trip_user ON knowledgebase_messages(trip_id, user_id);
         CREATE INDEX IF NOT EXISTS idx_knowledgebase_chunks_trip ON knowledgebase_chunks(trip_id);
       `);
       try {
         _db.prepare("INSERT OR IGNORE INTO addons (id, name, description, type, icon, enabled, sort_order) VALUES ('knowledgebase', 'Knowledgebase', 'Shared markdown vault search and chat for trip members', 'trip', 'Brain', 1, 7)").run();
       } catch {}
+    },
+    // 33: Backfill assistant replies with the user who asked the question for private histories
+    () => {
+      _db.exec(`
+        UPDATE knowledgebase_messages AS assistant
+        SET user_id = (
+          SELECT user_message.user_id
+          FROM knowledgebase_messages AS user_message
+          WHERE user_message.trip_id = assistant.trip_id
+            AND user_message.id < assistant.id
+            AND user_message.role = 'user'
+            AND user_message.user_id IS NOT NULL
+          ORDER BY user_message.id DESC
+          LIMIT 1
+        )
+        WHERE assistant.role = 'assistant'
+          AND assistant.user_id IS NULL
+      `);
     },
     // Future migrations go here (append only, never reorder)
   ];
