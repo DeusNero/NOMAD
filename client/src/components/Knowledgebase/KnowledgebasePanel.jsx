@@ -41,6 +41,12 @@ function mergeMessages(existingMessages, nextMessages) {
   return merged
 }
 
+function formatSourceTitle(relativePath, fallback = 'Source Note') {
+  if (!relativePath) return fallback
+  const fileName = String(relativePath).split('/').pop() || ''
+  return fileName.replace(/\.md$/i, '') || fallback
+}
+
 function MessageBubble({ message, currentUserId, onOpenSource, openingSourcePath }) {
   const isOwn = message.role === 'user' && String(message.user_id) === String(currentUserId)
 
@@ -128,33 +134,34 @@ function MessageBubble({ message, currentUserId, onOpenSource, openingSourcePath
               type="button"
               onClick={() => onOpenSource?.(citation)}
               style={{
-              border: '1px solid var(--border-faint)',
-              borderRadius: 12,
-              background: 'var(--bg-card)',
-              padding: 10,
-              textAlign: 'left',
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}>
+                border: '1px solid var(--border-faint)',
+                borderRadius: 12,
+                background: 'var(--bg-card)',
+                padding: 10,
+                textAlign: 'left',
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+              }}
+            >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
-                <span style={{
-                  width: 20,
-                  height: 20,
-                  borderRadius: '50%',
-                  background: 'rgba(15,23,42,0.08)',
-                  color: 'var(--text-primary)',
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: 11,
-                  fontWeight: 700,
-                }}>
-                  {citation.index}
-                </span>
-                <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)', minWidth: 0 }}>
-                  {citation.title || citation.relative_path}
-                </span>
+                  <span style={{
+                    width: 20,
+                    height: 20,
+                    borderRadius: '50%',
+                    background: 'rgba(15,23,42,0.08)',
+                    color: 'var(--text-primary)',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: 11,
+                    fontWeight: 700,
+                  }}>
+                    {citation.index}
+                  </span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-primary)', minWidth: 0 }}>
+                    {citation.title || citation.relative_path}
+                  </span>
                 </div>
                 <span style={{
                   display: 'inline-flex',
@@ -243,6 +250,7 @@ export default function KnowledgebasePanel({ tripId }) {
       if (String(event.tripId) !== String(tripId)) return
 
       if (event.type === 'knowledgebase:message:created' && event.message) {
+        if (String(event.message.user_id) !== String(user?.id)) return
         setMessages(prev => prev.some(msg => msg.id === event.message.id) ? prev : [...prev, event.message])
       }
 
@@ -261,7 +269,7 @@ export default function KnowledgebasePanel({ tripId }) {
 
     addListener(handler)
     return () => removeListener(handler)
-  }, [tripId])
+  }, [tripId, user?.id])
 
   useEffect(() => {
     if (!scrollRef.current) return
@@ -380,7 +388,7 @@ export default function KnowledgebasePanel({ tripId }) {
       setSourcePreview({
         ...source,
         heading: citation.heading || null,
-        title: citation.title || source.relative_path,
+        title: citation.title || formatSourceTitle(source.relative_path),
         excerpt: citation.excerpt || '',
       })
     } catch (err) {
@@ -389,6 +397,25 @@ export default function KnowledgebasePanel({ tripId }) {
       setOpeningSourcePath(null)
     }
   }, [openingSourcePath, toast, tripId])
+
+  const handleOpenSourceReference = useCallback(async (reference) => {
+    if (!sourcePreview?.relative_path || !reference || openingSourcePath) return
+
+    setOpeningSourcePath(`reference:${reference}`)
+    try {
+      const source = await knowledgebaseApi.resolveSource(tripId, sourcePreview.relative_path, reference)
+      setSourcePreview({
+        ...source,
+        heading: source.focus_heading || null,
+        title: formatSourceTitle(source.relative_path),
+        excerpt: '',
+      })
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to open related source note')
+    } finally {
+      setOpeningSourcePath(null)
+    }
+  }, [openingSourcePath, sourcePreview?.relative_path, toast, tripId])
 
   if (loading) {
     return (
@@ -436,7 +463,7 @@ export default function KnowledgebasePanel({ tripId }) {
               <div>
                 <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: 'var(--text-primary)' }}>Knowledgebase</h2>
                 <p style={{ margin: '2px 0 0', fontSize: 12, color: 'var(--text-muted)' }}>
-                  Shared vault Q&A and markdown uploads for this trip.
+                  Shared vault research with private chat history per trip member.
                 </p>
               </div>
             </div>
@@ -696,7 +723,7 @@ export default function KnowledgebasePanel({ tripId }) {
         footer={(
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-              API keys are configured in Admin settings. This form only stores the trip vault path and provider choice.
+              API keys are configured in Admin settings and are shared server-side for every trip member. This form only stores the trip vault path and provider choice.
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <button
@@ -925,6 +952,7 @@ export default function KnowledgebasePanel({ tripId }) {
                 tripId={tripId}
                 sourcePath={sourcePreview.relative_path}
                 content={sourcePreview.content}
+                onOpenSourceReference={handleOpenSourceReference}
               />
             </div>
           </div>

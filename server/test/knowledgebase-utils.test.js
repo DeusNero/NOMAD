@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('path');
 
 const {
@@ -8,8 +10,12 @@ const {
   buildKnowledgebasePrompt,
   chunkMarkdownContent,
   isPathInside,
+  isLikelyMarkdownNoteReference,
   normalizeAbsolutePath,
+  normalizeVaultReferenceTarget,
+  parseVaultReference,
   rankKnowledgebaseCandidates,
+  resolveVaultReference,
   sanitizeUploadFilename,
   tokenizeSearchTerms,
 } = require('../src/utils/knowledgebase');
@@ -81,6 +87,53 @@ test('tokenizeSearchTerms drops conversational filler before retrieval', () => {
     tokenizeSearchTerms('Can you tell me what I should visit in Naha?'),
     ['naha']
   );
+});
+
+test('normalizeVaultReferenceTarget strips wrappers from quoted links', () => {
+  assert.equal(
+    normalizeVaultReferenceTarget('"https://www.gov-online.go.jp/hlj/en/november_2025/november_2025-07.html"'),
+    'https://www.gov-online.go.jp/hlj/en/november_2025/november_2025-07.html'
+  );
+  assert.equal(
+    normalizeVaultReferenceTarget('<related-pages/naha-guide.md>'),
+    'related-pages/naha-guide.md'
+  );
+});
+
+test('parseVaultReference keeps heading targets for note links', () => {
+  assert.deepEqual(
+    parseVaultReference('[[naha-guide#Related pages|Read more]]'),
+    { reference: 'naha-guide', focusHeading: 'Related pages' }
+  );
+  assert.deepEqual(
+    parseVaultReference('naha-guide.md#Top sights'),
+    { reference: 'naha-guide.md', focusHeading: 'Top sights' }
+  );
+});
+
+test('isLikelyMarkdownNoteReference recognizes extensionless and markdown note links', () => {
+  assert.equal(isLikelyMarkdownNoteReference('naha-guide'), true);
+  assert.equal(isLikelyMarkdownNoteReference('related/naha-guide.md'), true);
+  assert.equal(isLikelyMarkdownNoteReference('docs/photo.webp'), false);
+  assert.equal(isLikelyMarkdownNoteReference('https://example.com/guide'), false);
+});
+
+test('resolveVaultReference finds related notes relative to the current note', () => {
+  const vaultRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-vault-'));
+  const sourceDir = path.join(vaultRoot, 'japan', 'okinawa');
+  fs.mkdirSync(sourceDir, { recursive: true });
+  fs.writeFileSync(path.join(sourceDir, 'naha.md'), '# Naha');
+  fs.writeFileSync(path.join(sourceDir, 'tokashiki.md'), '# Tokashiki');
+
+  const resolved = resolveVaultReference(
+    vaultRoot,
+    'japan/okinawa/guide.md',
+    'tokashiki#Beaches',
+    { preferMarkdown: true }
+  );
+
+  assert.equal(resolved.relativePath, 'japan/okinawa/tokashiki.md');
+  assert.equal(resolved.focusHeading, 'Beaches');
 });
 
 test('rankKnowledgebaseCandidates prefers exact place matches over unrelated snippets', () => {
