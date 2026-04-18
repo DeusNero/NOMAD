@@ -105,6 +105,14 @@ function normalizeVaultReferenceTarget(input) {
     .trim();
 }
 
+function normalizeKnowledgebaseSessionId(input) {
+  const normalized = String(input || '').trim();
+  if (!normalized) return null;
+  if (normalized.length < 12 || normalized.length > 128) return null;
+  if (!/^[A-Za-z0-9._:-]+$/.test(normalized)) return null;
+  return normalized;
+}
+
 function parseVaultReference(input) {
   const withoutAlias = normalizeVaultReferenceTarget(input)
     .replace(/^!\[\[|\[\[/, '')
@@ -558,6 +566,7 @@ module.exports = {
   findVaultFileByBasename,
   isPathInside,
   isLikelyMarkdownNoteReference,
+  normalizeKnowledgebaseSessionId,
   normalizeAbsolutePath,
   normalizeVaultReferenceTarget,
   normalizeVaultRelativePath,

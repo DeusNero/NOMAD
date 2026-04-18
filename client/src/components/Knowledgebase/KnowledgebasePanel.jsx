@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Brain, ExternalLink, FileText, Loader2, RefreshCw, Save, SendHorizontal, Settings2, ShieldCheck, Upload } from 'lucide-react'
-import { knowledgebaseApi } from '../../api/client'
+import { getKnowledgebaseSessionId, knowledgebaseApi } from '../../api/client'
 import { addListener, removeListener } from '../../api/websocket'
 import { useAuthStore } from '../../store/authStore'
 import KnowledgebaseMarkdown from './KnowledgebaseMarkdown'
@@ -47,8 +47,8 @@ function formatSourceTitle(relativePath, fallback = 'Source Note') {
   return fileName.replace(/\.md$/i, '') || fallback
 }
 
-function MessageBubble({ message, currentUserId, onOpenSource, openingSourcePath }) {
-  const isOwn = message.role === 'user' && String(message.user_id) === String(currentUserId)
+function MessageBubble({ message, currentSessionId, onOpenSource, openingSourcePath }) {
+  const isOwn = message.role === 'user' && String(message.session_id) === String(currentSessionId)
 
   return (
     <div style={{
@@ -198,6 +198,7 @@ export default function KnowledgebasePanel({ tripId }) {
   const toast = useToast()
   const fileInputRef = useRef(null)
   const scrollRef = useRef(null)
+  const knowledgebaseSessionId = useMemo(() => getKnowledgebaseSessionId(), [])
 
   const [loading, setLoading] = useState(true)
   const [config, setConfig] = useState(null)
@@ -250,7 +251,7 @@ export default function KnowledgebasePanel({ tripId }) {
       if (String(event.tripId) !== String(tripId)) return
 
       if (event.type === 'knowledgebase:message:created' && event.message) {
-        if (String(event.message.user_id) !== String(user?.id)) return
+        if (String(event.message.session_id) !== String(knowledgebaseSessionId)) return
         setMessages(prev => prev.some(msg => msg.id === event.message.id) ? prev : [...prev, event.message])
       }
 
@@ -269,7 +270,7 @@ export default function KnowledgebasePanel({ tripId }) {
 
     addListener(handler)
     return () => removeListener(handler)
-  }, [tripId, user?.id])
+  }, [knowledgebaseSessionId, tripId])
 
   useEffect(() => {
     if (!scrollRef.current) return
@@ -294,6 +295,7 @@ export default function KnowledgebasePanel({ tripId }) {
       content: trimmed,
       created_at: new Date().toISOString(),
       user_id: user?.id,
+      session_id: knowledgebaseSessionId,
       username: user?.username || 'You',
       avatar_url: user?.avatar ? `/uploads/avatars/${user.avatar}` : null,
     }
@@ -636,7 +638,7 @@ export default function KnowledgebasePanel({ tripId }) {
                 <MessageBubble
                   key={message.id}
                   message={message}
-                  currentUserId={user?.id}
+                  currentSessionId={knowledgebaseSessionId}
                   onOpenSource={handleOpenSource}
                   openingSourcePath={openingSourcePath}
                 />
