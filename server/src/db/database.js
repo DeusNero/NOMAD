@@ -384,6 +384,7 @@ function initDb() {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       trip_id INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
       user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      session_id TEXT,
       role TEXT NOT NULL,
       content TEXT NOT NULL,
       provider TEXT,
@@ -419,6 +420,7 @@ function initDb() {
     CREATE INDEX IF NOT EXISTS idx_collab_messages_trip ON collab_messages(trip_id);
     CREATE INDEX IF NOT EXISTS idx_knowledgebase_messages_trip ON knowledgebase_messages(trip_id);
     CREATE INDEX IF NOT EXISTS idx_knowledgebase_messages_trip_user ON knowledgebase_messages(trip_id, user_id);
+    CREATE INDEX IF NOT EXISTS idx_knowledgebase_messages_trip_session ON knowledgebase_messages(trip_id, session_id);
     CREATE INDEX IF NOT EXISTS idx_knowledgebase_chunks_trip ON knowledgebase_chunks(trip_id);
   `);
 
@@ -691,6 +693,7 @@ function initDb() {
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           trip_id INTEGER NOT NULL REFERENCES trips(id) ON DELETE CASCADE,
           user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          session_id TEXT,
           role TEXT NOT NULL,
           content TEXT NOT NULL,
           provider TEXT,
@@ -720,6 +723,7 @@ function initDb() {
         );
         CREATE INDEX IF NOT EXISTS idx_knowledgebase_messages_trip ON knowledgebase_messages(trip_id);
         CREATE INDEX IF NOT EXISTS idx_knowledgebase_messages_trip_user ON knowledgebase_messages(trip_id, user_id);
+        CREATE INDEX IF NOT EXISTS idx_knowledgebase_messages_trip_session ON knowledgebase_messages(trip_id, session_id);
         CREATE INDEX IF NOT EXISTS idx_knowledgebase_chunks_trip ON knowledgebase_chunks(trip_id);
       `);
       try {
@@ -743,6 +747,16 @@ function initDb() {
         WHERE assistant.role = 'assistant'
           AND assistant.user_id IS NULL
       `);
+    },
+    // 34: Add browser-scoped knowledgebase session ids for private histories without accounts
+    () => {
+      const hasSessionId = _db.prepare(
+        "SELECT 1 FROM pragma_table_info('knowledgebase_messages') WHERE name = 'session_id'"
+      ).get();
+      if (!hasSessionId) {
+        _db.exec('ALTER TABLE knowledgebase_messages ADD COLUMN session_id TEXT');
+      }
+      _db.exec('CREATE INDEX IF NOT EXISTS idx_knowledgebase_messages_trip_session ON knowledgebase_messages(trip_id, session_id)');
     },
     // Future migrations go here (append only, never reorder)
   ];

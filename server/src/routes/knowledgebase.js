@@ -16,6 +16,7 @@ const {
   extractAnthropicText,
   extractGeminiText,
   isPathInside,
+  normalizeKnowledgebaseSessionId,
   rankKnowledgebaseCandidates,
   resolveVaultReference,
   sanitizeUploadFilename,
@@ -134,21 +135,32 @@ function formatMessage(row) {
     citations: parseCitations(row.citations),
     created_at: row.created_at,
     user_id: row.user_id || null,
+    session_id: row.session_id || null,
     username: row.role === 'assistant' ? 'Knowledgebase' : (row.username || 'Unknown'),
     avatar_url: row.role === 'assistant' ? null : avatarUrl(row),
   };
 }
 
-function loadMessages(tripId, userId, limit = 100) {
+function getKnowledgebaseSessionId(req) {
+  const fromHeader = normalizeKnowledgebaseSessionId(req.headers['x-knowledgebase-session']);
+  if (fromHeader) return fromHeader;
+
+  const legacyUserId = req.user?.id != null ? String(req.user.id) : '';
+  return legacyUserId ? `legacy-user-${legacyUserId}` : null;
+}
+
+function loadMessages(tripId, sessionId, limit = 100) {
+  if (!sessionId) return [];
+
   const rows = db.prepare(`
     SELECT km.*, u.username, u.avatar
     FROM knowledgebase_messages km
     LEFT JOIN users u ON km.user_id = u.id
     WHERE km.trip_id = ?
-      AND km.user_id = ?
+      AND km.session_id = ?
     ORDER BY km.id DESC
     LIMIT ?
-  `).all(tripId, userId, limit);
+  `).all(tripId, sessionId, limit);
 
   return rows.reverse().map(formatMessage);
 }
@@ -162,16 +174,17 @@ function loadMessageById(messageId) {
   `).get(messageId));
 }
 
-function insertKnowledgebaseExchange({ tripId, userId, question, assistantContent, provider = null, model = null, citations = [] }) {
+function insertKnowledgebaseExchange({ tripId, userId, sessionId, question, assistantContent, provider = null, model = null, citations = [] }) {
   const insertMessage = db.prepare(`
-    INSERT INTO knowledgebase_messages (trip_id, user_id, role, content, provider, model, citations)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO knowledgebase_messages (trip_id, user_id, session_id, role, content, provider, model, citations)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
-  const userInsert = insertMessage.run(tripId, userId, 'user', question, null, null, null);
+  const userInsert = insertMessage.run(tripId, userId, sessionId, 'user', question, null, null, null);
   const assistantInsert = insertMessage.run(
     tripId,
     userId,
+    sessionId,
     'assistant',
     assistantContent,
     provider,
@@ -498,6 +511,7 @@ function resolveKnowledgebaseAsset(config, sourceRelativePath, assetReference) {
 router.get('/', authenticate, (req, res) => {
   const tripId = Number(req.params.tripId);
   if (!verifyTripAccess(tripId, req.user.id)) return res.status(404).json({ error: 'Trip not found' });
+  const sessionId = getKnowledgebaseSessionId(req);
 
   const config = getKnowledgebaseConfig(tripId);
   const stats = getKnowledgebaseStats(tripId);
@@ -511,7 +525,7 @@ router.get('/', authenticate, (req, res) => {
       has_gemini_key: !!keys.gemini_api_key,
       has_anthropic_key: !!keys.anthropic_api_key,
     },
-    messages: loadMessages(tripId, req.user.id),
+    messages: loadMessages(tripId, sessionId),
   });
 });
 
@@ -578,6 +592,7 @@ router.post('/reindex', authenticate, adminOnly, (req, res) => {
 router.post('/query', authenticate, async (req, res) => {
   const tripId = Number(req.params.tripId);
   if (!verifyTripAccess(tripId, req.user.id)) return res.status(404).json({ error: 'Trip not found' });
+  const sessionId = getKnowledgebaseSessionId(req);
 
   const question = String(req.body.question || '').trim();
   if (!question) return res.status(400).json({ error: 'Question is required' });
@@ -600,6 +615,7 @@ router.post('/query', authenticate, async (req, res) => {
       const { userMessage, assistantMessage } = insertKnowledgebaseExchange({
         tripId,
         userId: req.user.id,
+        sessionId,
         question,
         assistantContent: reply,
       });
@@ -610,7 +626,7 @@ router.post('/query', authenticate, async (req, res) => {
       return;
     }
 
-    const history = loadMessages(tripId, req.user.id, 8).map(message => ({
+    const history = loadMessages(tripId, sessionId, 8).map(message => ({
       role: message.role,
       content: message.content,
     }));
@@ -628,6 +644,7 @@ router.post('/query', authenticate, async (req, res) => {
     const { userMessage, assistantMessage } = insertKnowledgebaseExchange({
       tripId,
       userId: req.user.id,
+      sessionId,
       question,
       assistantContent: answer,
       provider,

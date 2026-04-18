@@ -8,6 +8,35 @@ const apiClient = axios.create({
   },
 })
 
+const KNOWLEDGEBASE_SESSION_STORAGE_KEY = 'knowledgebase_session_id'
+
+function generateKnowledgebaseSessionId() {
+  if (typeof window !== 'undefined' && window.crypto?.randomUUID) {
+    return `kb_${window.crypto.randomUUID()}`
+  }
+
+  return `kb_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 12)}`
+}
+
+export function getKnowledgebaseSessionId() {
+  const existing = localStorage.getItem(KNOWLEDGEBASE_SESSION_STORAGE_KEY)
+  if (existing) return existing
+
+  const nextId = generateKnowledgebaseSessionId()
+  localStorage.setItem(KNOWLEDGEBASE_SESSION_STORAGE_KEY, nextId)
+  return nextId
+}
+
+function withKnowledgebaseSession(config = {}) {
+  return {
+    ...config,
+    headers: {
+      ...(config.headers || {}),
+      'X-Knowledgebase-Session': getKnowledgebaseSessionId(),
+    },
+  }
+}
+
 // Request interceptor - add auth token and socket ID
 apiClient.interceptors.request.use(
   (config) => {
@@ -223,10 +252,10 @@ export const collabApi = {
 }
 
 export const knowledgebaseApi = {
-  getState: (tripId) => apiClient.get(`/trips/${tripId}/knowledgebase`).then(r => r.data),
-  updateConfig: (tripId, data) => apiClient.put(`/trips/${tripId}/knowledgebase/config`, data).then(r => r.data),
-  reindex: (tripId) => apiClient.post(`/trips/${tripId}/knowledgebase/reindex`).then(r => r.data),
-  query: (tripId, question) => apiClient.post(`/trips/${tripId}/knowledgebase/query`, { question }).then(r => r.data),
+  getState: (tripId) => apiClient.get(`/trips/${tripId}/knowledgebase`, withKnowledgebaseSession()).then(r => r.data),
+  updateConfig: (tripId, data) => apiClient.put(`/trips/${tripId}/knowledgebase/config`, data, withKnowledgebaseSession()).then(r => r.data),
+  reindex: (tripId) => apiClient.post(`/trips/${tripId}/knowledgebase/reindex`, {}, withKnowledgebaseSession()).then(r => r.data),
+  query: (tripId, question) => apiClient.post(`/trips/${tripId}/knowledgebase/query`, { question }, withKnowledgebaseSession()).then(r => r.data),
   getSource: (tripId, relativePath) => apiClient.get(`/trips/${tripId}/knowledgebase/source`, {
     params: { path: relativePath }
   }).then(r => r.data),

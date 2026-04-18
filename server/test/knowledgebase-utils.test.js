@@ -11,6 +11,7 @@ const {
   chunkMarkdownContent,
   isPathInside,
   isLikelyMarkdownNoteReference,
+  normalizeKnowledgebaseSessionId,
   normalizeAbsolutePath,
   normalizeVaultReferenceTarget,
   parseVaultReference,
@@ -98,6 +99,15 @@ test('normalizeVaultReferenceTarget strips wrappers from quoted links', () => {
     normalizeVaultReferenceTarget('<related-pages/naha-guide.md>'),
     'related-pages/naha-guide.md'
   );
+});
+
+test('normalizeKnowledgebaseSessionId accepts safe browser-scoped ids and rejects invalid values', () => {
+  assert.equal(
+    normalizeKnowledgebaseSessionId('kb_session_1234-abcd:device'),
+    'kb_session_1234-abcd:device'
+  );
+  assert.equal(normalizeKnowledgebaseSessionId('short-id'), null);
+  assert.equal(normalizeKnowledgebaseSessionId('kb session with spaces'), null);
 });
 
 test('parseVaultReference keeps heading targets for note links', () => {
