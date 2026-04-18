@@ -779,7 +779,7 @@ export default function KnowledgebasePanel({ tripId }) {
           }}>
             <FileText size={16} style={{ marginTop: 1, color: 'var(--text-primary)' }} />
             <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-              Use the absolute Mac paths from the server. For your current setup that means the vault root like <code>/Users/odin/projects/omega</code> and the upload folder inside it like <code>/Users/odin/projects/omega/raw</code>.
+              Use the absolute filesystem paths from the server. For example, the vault root like <code>/path/to/your/obsidian-vault</code> and the upload folder inside it like <code>/path/to/your/obsidian-vault/uploads</code>.
             </div>
           </div>
 
@@ -789,7 +789,7 @@ export default function KnowledgebasePanel({ tripId }) {
               type="text"
               value={settingsForm.vault_path}
               onChange={event => setSettingsForm(prev => ({ ...prev, vault_path: event.target.value }))}
-              placeholder="/Users/odin/projects/omega"
+              placeholder="/path/to/your/obsidian-vault"
               style={{
                 borderRadius: 12,
                 border: '1px solid var(--border-faint)',
@@ -807,7 +807,7 @@ export default function KnowledgebasePanel({ tripId }) {
               type="text"
               value={settingsForm.upload_path}
               onChange={event => setSettingsForm(prev => ({ ...prev, upload_path: event.target.value }))}
-              placeholder="/Users/odin/projects/omega/raw"
+              placeholder="/path/to/your/obsidian-vault/uploads"
               style={{
                 borderRadius: 12,
                 border: '1px solid var(--border-faint)',
