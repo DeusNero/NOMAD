@@ -420,7 +420,6 @@ function initDb() {
     CREATE INDEX IF NOT EXISTS idx_collab_messages_trip ON collab_messages(trip_id);
     CREATE INDEX IF NOT EXISTS idx_knowledgebase_messages_trip ON knowledgebase_messages(trip_id);
     CREATE INDEX IF NOT EXISTS idx_knowledgebase_messages_trip_user ON knowledgebase_messages(trip_id, user_id);
-    CREATE INDEX IF NOT EXISTS idx_knowledgebase_messages_trip_session ON knowledgebase_messages(trip_id, session_id);
     CREATE INDEX IF NOT EXISTS idx_knowledgebase_chunks_trip ON knowledgebase_chunks(trip_id);
   `);
 
