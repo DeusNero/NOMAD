@@ -253,8 +253,10 @@ export const collabApi = {
 
 export const knowledgebaseApi = {
   getState: (tripId) => apiClient.get(`/trips/${tripId}/knowledgebase`, withKnowledgebaseSession()).then(r => r.data),
+  getSynthesisStatus: (tripId) => apiClient.get(`/trips/${tripId}/knowledgebase/synthesis`, withKnowledgebaseSession()).then(r => r.data),
   updateConfig: (tripId, data) => apiClient.put(`/trips/${tripId}/knowledgebase/config`, data, withKnowledgebaseSession()).then(r => r.data),
   reindex: (tripId) => apiClient.post(`/trips/${tripId}/knowledgebase/reindex`, {}, withKnowledgebaseSession()).then(r => r.data),
+  synthesize: (tripId) => apiClient.post(`/trips/${tripId}/knowledgebase/synthesize`, {}, withKnowledgebaseSession()).then(r => r.data),
   query: (tripId, question) => apiClient.post(`/trips/${tripId}/knowledgebase/query`, { question }, withKnowledgebaseSession()).then(r => r.data),
   getSource: (tripId, relativePath) => apiClient.get(`/trips/${tripId}/knowledgebase/source`, {
     params: { path: relativePath }

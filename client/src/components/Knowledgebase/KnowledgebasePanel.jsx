@@ -207,11 +207,14 @@ export default function KnowledgebasePanel({ tripId }) {
   const [question, setQuestion] = useState('')
   const [sending, setSending] = useState(false)
   const [uploading, setUploading] = useState(false)
+  const [startingSynthesis, setStartingSynthesis] = useState(false)
   const [showSettings, setShowSettings] = useState(false)
   const [savingConfig, setSavingConfig] = useState(false)
   const [reindexing, setReindexing] = useState(false)
   const [openingSourcePath, setOpeningSourcePath] = useState(null)
   const [sourcePreview, setSourcePreview] = useState(null)
+  const [synthesis, setSynthesis] = useState(null)
+  const [uploadPrompt, setUploadPrompt] = useState(null)
   const [settingsForm, setSettingsForm] = useState({
     vault_path: '',
     upload_path: '',
@@ -225,6 +228,7 @@ export default function KnowledgebasePanel({ tripId }) {
     try {
       const data = await knowledgebaseApi.getState(tripId)
       setConfig(data.config)
+      setSynthesis(data.synthesis || null)
       setCapabilities(data.capabilities || {})
       setMessages(data.messages || [])
       setSettingsForm(prev => ({
@@ -242,9 +246,37 @@ export default function KnowledgebasePanel({ tripId }) {
     }
   }, [tripId, toast])
 
+  const refreshSynthesisStatus = useCallback(async ({ silent = true } = {}) => {
+    try {
+      const data = await knowledgebaseApi.getSynthesisStatus(tripId)
+      setSynthesis(data.synthesis || null)
+      if (data.stats) {
+        setConfig(prev => prev ? ({
+          ...prev,
+          stats: data.stats,
+          last_indexed_at: data.stats.last_indexed_at || prev.last_indexed_at,
+        }) : prev)
+      }
+    } catch (err) {
+      if (!silent) {
+        toast.error(err.response?.data?.error || 'Failed to load synthesis status')
+      }
+    }
+  }, [tripId, toast])
+
   useEffect(() => {
     loadState()
   }, [loadState])
+
+  useEffect(() => {
+    if (!config?.configured) return undefined
+    const intervalMs = synthesis?.active ? 4000 : 15000
+    const intervalId = window.setInterval(() => {
+      refreshSynthesisStatus()
+    }, intervalMs)
+
+    return () => window.clearInterval(intervalId)
+  }, [config?.configured, refreshSynthesisStatus, synthesis?.active])
 
   useEffect(() => {
     const handler = (event) => {
@@ -283,6 +315,71 @@ export default function KnowledgebasePanel({ tripId }) {
     config?.stats?.chunk_count ? `${config.stats.chunk_count} chunks` : '0 chunks',
     config?.last_indexed_at ? `Indexed ${formatTimestamp(config.last_indexed_at)}` : 'Not indexed yet',
   ]), [config])
+
+  const statusChipsDisplay = useMemo(() => ([
+    config?.provider ? `${config.provider}${config.model ? ` | ${config.model}` : ''}` : 'Not configured',
+    config?.stats?.file_count ? `${config.stats.file_count} files` : '0 files',
+    config?.stats?.chunk_count ? `${config.stats.chunk_count} chunks` : '0 chunks',
+    config?.last_indexed_at ? `Indexed ${formatTimestamp(config.last_indexed_at)}` : 'Not indexed yet',
+    synthesis?.pending_count ? `${synthesis.pending_count} pending raw` : 'No pending raw',
+  ]), [config, synthesis?.pending_count])
+
+  const synthesisTone = synthesis?.error
+    ? 'error'
+    : (synthesis?.state === 'completed' && !synthesis?.pending_count
+        ? 'success'
+        : (synthesis?.active ? 'active' : 'idle'))
+
+  const synthesisSummary = useMemo(() => {
+    if (!synthesis?.available) return null
+
+    if (synthesis.error) {
+      return {
+        title: 'Synthesis needs attention',
+        body: synthesis.error,
+      }
+    }
+
+    if (synthesis.state === 'reindexing') {
+      return {
+        title: 'Refreshing search',
+        body: 'Hermes finished writing notes. Nomad is rebuilding the Japan search index now.',
+      }
+    }
+
+    if (synthesis.state === 'synthesizing') {
+      return {
+        title: 'Hermes is synthesizing pending Japan sources',
+        body: synthesis.task_summary
+          || `Processed ${synthesis.processed_count} of ${synthesis.queued_count} queued sources so far.`,
+      }
+    }
+
+    if (synthesis.state === 'queued' && synthesis.active) {
+      return {
+        title: 'Queued for Hermes',
+        body: `Waiting for Hermes to pick up ${synthesis.queued_count} pending source${synthesis.queued_count === 1 ? '' : 's'}.`,
+      }
+    }
+
+    if (synthesis.pending_count > 0) {
+      return {
+        title: 'Raw Japan sources are waiting',
+        body: `${synthesis.pending_count} markdown file${synthesis.pending_count === 1 ? '' : 's'} are sitting in raw and are not searchable until Hermes synthesizes them into wiki/japan.`,
+      }
+    }
+
+    if (synthesis.state === 'completed') {
+      return {
+        title: 'Japan knowledgebase updated',
+        body: synthesis.queued_count
+          ? 'Hermes finished the batch and Nomad refreshed the searchable Japan notes.'
+          : 'The latest synthesis batch already finished.',
+      }
+    }
+
+    return null
+  }, [synthesis])
 
   const handleAsk = async () => {
     const trimmed = question.trim()
@@ -332,6 +429,7 @@ export default function KnowledgebasePanel({ tripId }) {
     try {
       const data = await knowledgebaseApi.updateConfig(tripId, settingsForm)
       setConfig(data.config)
+      await refreshSynthesisStatus()
       setShowSettings(false)
       toast.success('Knowledgebase settings saved')
     } catch (err) {
@@ -372,12 +470,48 @@ export default function KnowledgebasePanel({ tripId }) {
         ...prev,
         stats: data.stats || prev.stats,
       }) : prev)
+      setSynthesis(data.synthesis || null)
       toast.success(`Uploaded ${data.file.file_name}`)
+      if (!data.file.indexed && data.synthesis?.pending_count > 0 && !data.synthesis?.active) {
+        setUploadPrompt({
+          fileName: data.file.file_name,
+          pendingCount: data.synthesis.pending_count,
+        })
+      }
     } catch (err) {
       toast.error(err.response?.data?.error || 'Markdown upload failed')
     } finally {
       setUploading(false)
       event.target.value = ''
+    }
+  }
+
+  const handleStartSynthesis = async ({ closePrompt = false } = {}) => {
+    if (startingSynthesis) return
+
+    setStartingSynthesis(true)
+    try {
+      const data = await knowledgebaseApi.synthesize(tripId)
+      setSynthesis(data.synthesis || null)
+      if (data.stats) {
+        setConfig(prev => prev ? ({
+          ...prev,
+          stats: data.stats,
+          last_indexed_at: data.stats.last_indexed_at || prev.last_indexed_at,
+        }) : prev)
+      }
+      if (closePrompt) setUploadPrompt(null)
+      if (data.queued) {
+        toast.success(`Queued ${data.queued_count} pending source${data.queued_count === 1 ? '' : 's'} for Hermes`)
+      } else if (data.synthesis?.active) {
+        toast.success('Hermes is already working through the pending Japan sources')
+      } else {
+        toast.success('There are no pending raw sources to synthesize')
+      }
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Failed to start synthesis')
+    } finally {
+      setStartingSynthesis(false)
     }
   }
 
@@ -470,7 +604,7 @@ export default function KnowledgebasePanel({ tripId }) {
               </div>
             </div>
             <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-              {statusChips.map(chip => (
+              {statusChipsDisplay.map(chip => (
                 <span key={chip} style={{
                   fontSize: 11,
                   fontWeight: 600,
@@ -560,6 +694,79 @@ export default function KnowledgebasePanel({ tripId }) {
         </div>
       </div>
 
+      {config?.configured && synthesisSummary && (
+        <div style={{ padding: '14px 18px 0' }}>
+          <div style={{
+            borderRadius: 16,
+            border: synthesisTone === 'error'
+              ? '1px solid rgba(185, 28, 28, 0.22)'
+              : '1px solid var(--border-faint)',
+            background: synthesisTone === 'active'
+              ? 'rgba(15, 23, 42, 0.03)'
+              : (synthesisTone === 'success' ? 'rgba(5, 150, 105, 0.08)' : 'var(--bg-card)'),
+            padding: 16,
+            display: 'grid',
+            gap: 12,
+          }}>
+            <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+              <div style={{ display: 'grid', gap: 6 }}>
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>
+                  {(synthesis?.active || startingSynthesis) ? (
+                    <Loader2 size={15} className="animate-spin" />
+                  ) : (
+                    <RefreshCw size={15} />
+                  )}
+                  {synthesisSummary.title}
+                </div>
+                <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--text-muted)', maxWidth: 780 }}>
+                  {synthesisSummary.body}
+                </div>
+              </div>
+
+              {capabilities.can_synthesize && (synthesis?.pending_count > 0 || synthesis?.active) && (
+                <button
+                  onClick={() => handleStartSynthesis()}
+                  disabled={startingSynthesis || synthesis?.active || synthesis?.pending_count < 1}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: 8,
+                    padding: '10px 14px',
+                    borderRadius: 12,
+                    border: '1px solid var(--border-faint)',
+                    background: 'var(--bg-card)',
+                    color: 'var(--text-primary)',
+                    cursor: (startingSynthesis || synthesis?.active || synthesis?.pending_count < 1) ? 'default' : 'pointer',
+                    fontWeight: 600,
+                    fontFamily: 'inherit',
+                  }}
+                >
+                  {startingSynthesis ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+                  {synthesis?.active ? 'Synthesis running' : 'Synthesize pending'}
+                </button>
+              )}
+            </div>
+
+            {synthesis?.pending_files?.length > 0 && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {synthesis.pending_files.slice(0, 4).map(file => (
+                  <span key={file.relative_path} style={{
+                    fontSize: 12,
+                    color: 'var(--text-primary)',
+                    background: 'var(--bg-secondary)',
+                    border: '1px solid var(--border-faint)',
+                    borderRadius: 999,
+                    padding: '5px 10px',
+                  }}>
+                    {file.file_name}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {!config?.configured ? (
         <div style={{
           flex: 1,
@@ -582,7 +789,7 @@ export default function KnowledgebasePanel({ tripId }) {
             </div>
             <p style={{ margin: 0, fontSize: 14, lineHeight: 1.6, color: 'var(--text-muted)' }}>
               {capabilities.can_configure
-                ? 'Set the vault path, raw upload folder, provider, and model first. Then reindex the vault to make it searchable.'
+                ? 'Set the indexed wiki path, raw upload folder, provider, and model first. Then reindex the searchable notes.'
                 : 'An admin still needs to connect the vault and provider keys before trip members can use this tab.'}
             </p>
             {capabilities.can_configure && (
@@ -725,7 +932,7 @@ export default function KnowledgebasePanel({ tripId }) {
         footer={(
           <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
             <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
-              API keys are configured in Admin settings and are shared server-side for every trip member. This form only stores the trip vault path and provider choice.
+              API keys are configured in Admin settings and are shared server-side for every trip member. This form stores the trip's indexed search path, raw upload path, and provider choice.
             </div>
             <div style={{ display: 'flex', gap: 10 }}>
               <button
@@ -779,17 +986,17 @@ export default function KnowledgebasePanel({ tripId }) {
           }}>
             <FileText size={16} style={{ marginTop: 1, color: 'var(--text-primary)' }} />
             <div style={{ fontSize: 13, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-              Use the absolute filesystem paths from the server. For example, the vault root like <code>/path/to/your/obsidian-vault</code> and the upload folder inside it like <code>/path/to/your/obsidian-vault/uploads</code>.
+              Use the absolute filesystem paths from the server. Point the indexed path at the curated notes Nomad should search, and point the raw upload path at the markdown inbox Hermes should synthesize later.
             </div>
           </div>
 
           <label style={{ display: 'grid', gap: 6 }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>Vault path</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>Indexed path</span>
             <input
               type="text"
               value={settingsForm.vault_path}
               onChange={event => setSettingsForm(prev => ({ ...prev, vault_path: event.target.value }))}
-              placeholder="/path/to/your/obsidian-vault"
+              placeholder="/path/to/your/obsidian-vault/wiki/japan"
               style={{
                 borderRadius: 12,
                 border: '1px solid var(--border-faint)',
@@ -802,12 +1009,12 @@ export default function KnowledgebasePanel({ tripId }) {
           </label>
 
           <label style={{ display: 'grid', gap: 6 }}>
-            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>Upload path</span>
+            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>Raw upload path</span>
             <input
               type="text"
               value={settingsForm.upload_path}
               onChange={event => setSettingsForm(prev => ({ ...prev, upload_path: event.target.value }))}
-              placeholder="/path/to/your/obsidian-vault/uploads"
+              placeholder="/path/to/your/obsidian-vault/raw/japan"
               style={{
                 borderRadius: 12,
                 border: '1px solid var(--border-faint)',
@@ -901,6 +1108,75 @@ export default function KnowledgebasePanel({ tripId }) {
             Anthropic {capabilities.has_anthropic_key ? 'connected' : 'missing'}
           </div>
         </div>
+      </Modal>
+
+      <Modal
+        isOpen={!!uploadPrompt}
+        onClose={() => setUploadPrompt(null)}
+        title="Upload complete"
+        size="md"
+        footer={(
+          <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+            <button
+              onClick={() => setUploadPrompt(null)}
+              style={{
+                padding: '10px 14px',
+                borderRadius: 12,
+                border: '1px solid var(--border-faint)',
+                background: 'var(--bg-card)',
+                color: 'var(--text-primary)',
+                fontFamily: 'inherit',
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              Not now
+            </button>
+            <button
+              onClick={() => handleStartSynthesis({ closePrompt: true })}
+              disabled={startingSynthesis}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                padding: '10px 14px',
+                borderRadius: 12,
+                border: 'none',
+                background: 'var(--text-primary)',
+                color: 'var(--bg-card)',
+                fontFamily: 'inherit',
+                fontWeight: 700,
+                cursor: startingSynthesis ? 'default' : 'pointer',
+              }}
+            >
+              {startingSynthesis ? <Loader2 size={15} className="animate-spin" /> : <RefreshCw size={15} />}
+              Synthesize now
+            </button>
+          </div>
+        )}
+      >
+        {uploadPrompt && (
+          <div style={{ display: 'grid', gap: 12, color: 'var(--text-primary)' }}>
+            <div style={{ fontSize: 14, lineHeight: 1.6 }}>
+              <strong>{uploadPrompt.fileName}</strong>
+              {' '}
+              was saved into the raw Japan inbox.
+            </div>
+            <div style={{ fontSize: 13, lineHeight: 1.6, color: 'var(--text-muted)' }}>
+              Do you want Hermes to synthesize the pending Japan sources into the existing knowledgebase now? This will process all currently pending raw markdown files, not just the one you uploaded.
+            </div>
+            <div style={{
+              fontSize: 12,
+              color: 'var(--text-muted)',
+              background: 'var(--bg-secondary)',
+              border: '1px solid var(--border-faint)',
+              borderRadius: 12,
+              padding: '10px 12px',
+            }}>
+              Pending raw sources: {uploadPrompt.pendingCount}
+            </div>
+          </div>
+        )}
       </Modal>
 
       <Modal

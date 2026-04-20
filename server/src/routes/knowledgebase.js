@@ -22,6 +22,12 @@ const {
   sanitizeUploadFilename,
   tokenizeSearchTerms,
 } = require('../utils/knowledgebase');
+const {
+  collectPendingKnowledgebaseUploads,
+  getDefaultKnowledgebaseSynthesisPaths,
+  queueKnowledgebaseSynthesisBatch,
+  readKnowledgebaseHermesStatus,
+} = require('../utils/knowledgebase-synthesis');
 
 const router = express.Router({ mergeParams: true });
 const PROVIDERS = new Set(['gemini', 'anthropic']);
@@ -29,6 +35,7 @@ const DEFAULT_MODELS = {
   gemini: 'gemini-2.5-pro',
   anthropic: 'claude-sonnet-4-20250514',
 };
+const synthesisRuns = new Map();
 
 const markdownUpload = multer({
   storage: multer.memoryStorage(),
@@ -84,6 +91,94 @@ function getKnowledgebaseStats(tripId) {
     FROM knowledgebase_chunks
     WHERE trip_id = ?
   `).get(tripId) || { file_count: 0, chunk_count: 0, last_indexed_at: null };
+}
+
+function getKnowledgebaseSynthesisSnapshot(tripId, config, { socketId = null } = {}) {
+  const baseState = {
+    available: !!config,
+    active: false,
+    state: 'idle',
+    pending_count: 0,
+    pending_files: [],
+    queued_count: 0,
+    processed_count: 0,
+    started_at: null,
+    completed_at: null,
+    last_reindexed_at: null,
+    task_summary: null,
+    error: null,
+    hermes: {
+      busy: false,
+      stale: false,
+      state: 'idle',
+      task_summary: null,
+      updated_at: null,
+    },
+  };
+
+  if (!config) return baseState;
+
+  const searchRoot = ensureReadableDirectory(config.vault_path);
+  const uploadRoot = ensureReadableDirectory(config.upload_path);
+  const pendingFiles = collectPendingKnowledgebaseUploads({ searchRoot, uploadRoot });
+  const pendingBySlug = new Set(pendingFiles.map(file => file.source_slug));
+  const { hermesStatusPath } = getDefaultKnowledgebaseSynthesisPaths();
+  const hermesStatus = readKnowledgebaseHermesStatus(hermesStatusPath);
+  const run = synthesisRuns.get(tripId);
+
+  const snapshot = {
+    ...baseState,
+    pending_count: pendingFiles.length,
+    pending_files: pendingFiles.slice(0, 10).map(file => ({
+      file_name: file.file_name,
+      relative_path: file.relative_upload_path,
+      source_slug: file.source_slug,
+    })),
+    hermes: {
+      busy: hermesStatus.busy,
+      stale: hermesStatus.stale,
+      state: hermesStatus.state,
+      task_summary: hermesStatus.taskSummary,
+      updated_at: hermesStatus.updatedAt,
+    },
+  };
+
+  if (!run) return snapshot;
+
+  const queuedCount = run.files.length;
+  const processedCount = run.files.filter(file => !pendingBySlug.has(file.source_slug)).length;
+  run.queuedCount = queuedCount;
+  run.processedCount = processedCount;
+
+  if (!run.completedAt && !run.error) {
+    if (queuedCount > 0 && processedCount >= queuedCount) {
+      run.state = 'reindexing';
+      const result = reindexTripKnowledgebase(tripId, config);
+      const stats = getKnowledgebaseStats(tripId);
+      run.completedAt = new Date().toISOString();
+      run.lastReindexedAt = stats.last_indexed_at || run.completedAt;
+      run.reindexResult = { ...result, stats };
+      run.state = 'completed';
+      broadcast(tripId, 'knowledgebase:indexed', { stats }, socketId);
+    } else if (hermesStatus.busy) {
+      run.state = 'synthesizing';
+    } else {
+      run.state = 'queued';
+    }
+  }
+
+  return {
+    ...snapshot,
+    active: run.state === 'queued' || run.state === 'synthesizing' || run.state === 'reindexing',
+    state: run.state,
+    queued_count: queuedCount,
+    processed_count: processedCount,
+    started_at: run.startedAt,
+    completed_at: run.completedAt || null,
+    last_reindexed_at: run.lastReindexedAt || null,
+    task_summary: hermesStatus.taskSummary || null,
+    error: run.error || null,
+  };
 }
 
 function serializeConfig(config, stats, isAdmin) {
@@ -513,20 +608,42 @@ router.get('/', authenticate, (req, res) => {
   if (!verifyTripAccess(tripId, req.user.id)) return res.status(404).json({ error: 'Trip not found' });
   const sessionId = getKnowledgebaseSessionId(req);
 
-  const config = getKnowledgebaseConfig(tripId);
-  const stats = getKnowledgebaseStats(tripId);
-  const keys = getKnowledgebaseKeys();
+  try {
+    const config = getKnowledgebaseConfig(tripId);
+    const synthesis = getKnowledgebaseSynthesisSnapshot(tripId, config);
+    const stats = getKnowledgebaseStats(tripId);
+    const keys = getKnowledgebaseKeys();
 
-  res.json({
-    config: serializeConfig(config, stats, req.user.role === 'admin'),
-    capabilities: {
-      can_configure: req.user.role === 'admin',
-      can_upload: !!config?.allow_uploads,
-      has_gemini_key: !!keys.gemini_api_key,
-      has_anthropic_key: !!keys.anthropic_api_key,
-    },
-    messages: loadMessages(tripId, sessionId),
-  });
+    res.json({
+      config: serializeConfig(config, stats, req.user.role === 'admin'),
+      synthesis,
+      capabilities: {
+        can_configure: req.user.role === 'admin',
+        can_upload: !!config?.allow_uploads,
+        can_synthesize: !!config,
+        has_gemini_key: !!keys.gemini_api_key,
+        has_anthropic_key: !!keys.anthropic_api_key,
+      },
+      messages: loadMessages(tripId, sessionId),
+    });
+  } catch (err) {
+    res.status(400).json({ error: err.message || 'Failed to load knowledgebase' });
+  }
+});
+
+router.get('/synthesis', authenticate, (req, res) => {
+  const tripId = Number(req.params.tripId);
+  if (!verifyTripAccess(tripId, req.user.id)) return res.status(404).json({ error: 'Trip not found' });
+
+  try {
+    const config = getKnowledgebaseConfig(tripId);
+    const synthesis = getKnowledgebaseSynthesisSnapshot(tripId, config, {
+      socketId: req.headers['x-socket-id'],
+    });
+    res.json({ synthesis, stats: getKnowledgebaseStats(tripId) });
+  } catch (err) {
+    res.status(400).json({ error: err.message || 'Failed to load synthesis status' });
+  }
 });
 
 router.put('/config', authenticate, adminOnly, (req, res) => {
@@ -539,10 +656,6 @@ router.put('/config', authenticate, adminOnly, (req, res) => {
     const vaultPath = ensureReadableDirectory(req.body.vault_path);
     const uploadPath = ensureReadableDirectory(req.body.upload_path);
     const allowUploads = req.body.allow_uploads !== false;
-
-    if (!isPathInside(vaultPath, uploadPath)) {
-      return res.status(400).json({ error: 'Upload path must be inside the vault path' });
-    }
 
     fs.accessSync(uploadPath, fs.constants.W_OK);
 
@@ -568,6 +681,72 @@ router.put('/config', authenticate, adminOnly, (req, res) => {
     broadcast(tripId, 'knowledgebase:config:updated', { config: serializeConfig(config, stats, false) }, req.headers['x-socket-id']);
   } catch (err) {
     res.status(400).json({ error: err.message || 'Invalid knowledgebase configuration' });
+  }
+});
+
+router.post('/synthesize', authenticate, demoUploadBlock, (req, res) => {
+  const tripId = Number(req.params.tripId);
+  if (!verifyTripAccess(tripId, req.user.id)) return res.status(404).json({ error: 'Trip not found' });
+
+  try {
+    const config = getKnowledgebaseConfig(tripId);
+    if (!config) return res.status(400).json({ error: 'Knowledgebase is not configured yet' });
+
+    const currentRun = synthesisRuns.get(tripId);
+    if (currentRun && (currentRun.state === 'queued' || currentRun.state === 'synthesizing' || currentRun.state === 'reindexing')) {
+      return res.status(202).json({
+        queued: false,
+        synthesis: getKnowledgebaseSynthesisSnapshot(tripId, config),
+        stats: getKnowledgebaseStats(tripId),
+      });
+    }
+
+    const searchRoot = ensureReadableDirectory(config.vault_path);
+    const uploadRoot = ensureReadableDirectory(config.upload_path);
+    const pendingFiles = collectPendingKnowledgebaseUploads({ searchRoot, uploadRoot });
+    if (pendingFiles.length === 0) {
+      synthesisRuns.delete(tripId);
+      return res.json({
+        queued: false,
+        synthesis: getKnowledgebaseSynthesisSnapshot(tripId, config),
+        stats: getKnowledgebaseStats(tripId),
+      });
+    }
+
+    const { activityLogPath } = getDefaultKnowledgebaseSynthesisPaths();
+    queueKnowledgebaseSynthesisBatch({
+      tripId,
+      files: pendingFiles,
+      activityLogPath,
+    });
+
+    synthesisRuns.set(tripId, {
+      startedAt: new Date().toISOString(),
+      state: 'queued',
+      startedBy: req.user.username,
+      files: pendingFiles.map(file => ({
+        file_name: file.file_name,
+        relative_path: file.relative_upload_path,
+        source_slug: file.source_slug,
+      })),
+      error: null,
+      completedAt: null,
+      lastReindexedAt: null,
+    });
+
+    res.status(202).json({
+      queued: true,
+      queued_count: pendingFiles.length,
+      synthesis: getKnowledgebaseSynthesisSnapshot(tripId, config),
+      stats: getKnowledgebaseStats(tripId),
+    });
+  } catch (err) {
+    const run = synthesisRuns.get(tripId);
+    if (run) {
+      run.state = 'failed';
+      run.error = err.message || 'Failed to start synthesis';
+    }
+    res.status(500).json({ error: err.message || 'Failed to start synthesis' });
   }
 });
 
@@ -705,9 +884,6 @@ router.post('/upload', authenticate, demoUploadBlock, markdownUpload.single('fil
 
     const vaultPath = ensureReadableDirectory(config.vault_path);
     const uploadPath = ensureReadableDirectory(config.upload_path);
-    if (!isPathInside(vaultPath, uploadPath)) {
-      return res.status(400).json({ error: 'Upload path must stay inside the vault path' });
-    }
 
     let fileName = sanitizeUploadFilename(req.file.originalname);
     let targetPath = path.join(uploadPath, fileName);
@@ -719,18 +895,31 @@ router.post('/upload', authenticate, demoUploadBlock, markdownUpload.single('fil
     }
 
     fs.writeFileSync(targetPath, req.file.buffer);
-    const { relativePath, chunkCount } = indexUploadedFile(tripId, config, targetPath);
+    const shouldIndexUpload = isPathInside(vaultPath, targetPath);
+    const uploadResult = shouldIndexUpload
+      ? indexUploadedFile(tripId, config, targetPath)
+      : {
+          relativePath: path.relative(uploadPath, targetPath).split(path.sep).join('/'),
+          chunkCount: 0,
+        };
 
     const uploadedFile = {
       file_name: fileName,
-      relative_path: relativePath,
+      relative_path: uploadResult.relativePath,
       uploaded_by: req.user.username,
-      chunk_count: chunkCount,
+      chunk_count: uploadResult.chunkCount,
+      indexed: shouldIndexUpload,
     };
 
-    res.status(201).json({ file: uploadedFile, stats: getKnowledgebaseStats(tripId) });
+    res.status(201).json({
+      file: uploadedFile,
+      stats: getKnowledgebaseStats(tripId),
+      synthesis: getKnowledgebaseSynthesisSnapshot(tripId, config),
+    });
     broadcast(tripId, 'knowledgebase:file:uploaded', { file: uploadedFile }, req.headers['x-socket-id']);
-    broadcast(tripId, 'knowledgebase:indexed', { stats: getKnowledgebaseStats(tripId) }, req.headers['x-socket-id']);
+    if (shouldIndexUpload) {
+      broadcast(tripId, 'knowledgebase:indexed', { stats: getKnowledgebaseStats(tripId) }, req.headers['x-socket-id']);
+    }
   } catch (err) {
     res.status(500).json({ error: err.message || 'Markdown upload failed' });
   }
