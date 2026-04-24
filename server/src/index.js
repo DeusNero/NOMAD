@@ -45,7 +45,20 @@ app.use(cors({
   credentials: true
 }));
 app.use(helmet({
-  contentSecurityPolicy: false,   // managed by frontend meta tag or reverse proxy
+  contentSecurityPolicy: {
+    useDefaults: true,
+    directives: {
+      "default-src": ["'self'"],
+      "base-uri": ["'self'"],
+      "object-src": ["'self'", "blob:"],
+      "script-src": ["'self'"],
+      "style-src": ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://unpkg.com"],
+      "font-src": ["'self'", "https://fonts.gstatic.com", "data:"],
+      "img-src": ["'self'", "data:", "blob:", "https:"],
+      "connect-src": ["'self'", "https:", "ws:", "wss:"],
+      "frame-ancestors": ["'none'"],
+    },
+  },
   crossOriginEmbedderPolicy: false, // allows loading external images (maps, etc.)
 }));
 app.use(express.json({ limit: '100kb' }));

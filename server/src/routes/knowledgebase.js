@@ -16,7 +16,9 @@ const {
   extractAnthropicText,
   extractGeminiText,
   isPathInside,
+  isPathInsideAny,
   normalizeKnowledgebaseSessionId,
+  parseAllowedRootPaths,
   rankKnowledgebaseCandidates,
   resolveVaultReference,
   sanitizeUploadFilename,
@@ -35,6 +37,8 @@ const DEFAULT_MODELS = {
   gemini: 'gemini-2.5-pro',
   anthropic: 'claude-sonnet-4-20250514',
 };
+const VAULT_ROOTS_ENV = 'KNOWLEDGEBASE_ALLOWED_VAULT_ROOTS';
+const UPLOAD_ROOTS_ENV = 'KNOWLEDGEBASE_ALLOWED_UPLOAD_ROOTS';
 const synthesisRuns = new Map();
 
 const markdownUpload = multer({
@@ -91,6 +95,40 @@ function getKnowledgebaseStats(tripId) {
     FROM knowledgebase_chunks
     WHERE trip_id = ?
   `).get(tripId) || { file_count: 0, chunk_count: 0, last_indexed_at: null };
+}
+
+function requireAllowedKnowledgebasePath(candidatePath, envName, label) {
+  const allowedRoots = parseAllowedRootPaths(process.env[envName]);
+
+  if (allowedRoots.length === 0) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error(`${label} allowlist is not configured. Set ${envName}.`);
+    }
+    return;
+  }
+
+  if (!isPathInsideAny(allowedRoots, candidatePath)) {
+    throw new Error(`${label} must stay inside an allowed root`);
+  }
+}
+
+function validateKnowledgebasePaths({ vault_path, upload_path }, { requireWritableUpload = false } = {}) {
+  const vaultPath = ensureReadableDirectory(vault_path);
+  const uploadPath = ensureReadableDirectory(upload_path);
+
+  requireAllowedKnowledgebasePath(vaultPath, VAULT_ROOTS_ENV, 'Indexed path');
+  requireAllowedKnowledgebasePath(uploadPath, UPLOAD_ROOTS_ENV, 'Raw upload path');
+
+  if (requireWritableUpload) {
+    fs.accessSync(uploadPath, fs.constants.W_OK);
+  }
+
+  return { vaultPath, uploadPath };
+}
+
+function validateStoredKnowledgebaseConfig(config) {
+  if (!config) return null;
+  return validateKnowledgebasePaths(config);
 }
 
 function getKnowledgebaseSynthesisSnapshot(tripId, config, { socketId = null } = {}) {
@@ -244,7 +282,7 @@ function getKnowledgebaseSessionId(req) {
   return legacyUserId ? `legacy-user-${legacyUserId}` : null;
 }
 
-function loadMessages(tripId, sessionId, limit = 100) {
+function loadMessages(tripId, sessionId, userId, limit = 100) {
   if (!sessionId) return [];
 
   const rows = db.prepare(`
@@ -253,9 +291,10 @@ function loadMessages(tripId, sessionId, limit = 100) {
     LEFT JOIN users u ON km.user_id = u.id
     WHERE km.trip_id = ?
       AND km.session_id = ?
+      AND km.user_id = ?
     ORDER BY km.id DESC
     LIMIT ?
-  `).all(tripId, sessionId, limit);
+  `).all(tripId, sessionId, userId, limit);
 
   return rows.reverse().map(formatMessage);
 }
@@ -360,6 +399,46 @@ const replaceTripIndex = db.transaction((tripId, chunkRows) => {
     SET last_indexed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
     WHERE trip_id = ?
   `).run(tripId);
+});
+
+function clearTripIndex(tripId) {
+  const existingIds = db.prepare('SELECT id FROM knowledgebase_chunks WHERE trip_id = ?').all(tripId).map(row => row.id);
+  removeChunksByIds(existingIds);
+  db.prepare(`
+    UPDATE knowledgebase_configs
+    SET last_indexed_at = NULL, updated_at = CURRENT_TIMESTAMP
+    WHERE trip_id = ?
+  `).run(tripId);
+}
+
+const upsertKnowledgebaseConfig = db.transaction(({
+  tripId,
+  vaultPath,
+  uploadPath,
+  provider,
+  model,
+  allowUploads,
+  updatedBy,
+}) => {
+  const previous = getKnowledgebaseConfig(tripId);
+
+  db.prepare(`
+    INSERT INTO knowledgebase_configs (
+      trip_id, vault_path, upload_path, provider, model, allow_uploads, updated_by
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(trip_id) DO UPDATE SET
+      vault_path = excluded.vault_path,
+      upload_path = excluded.upload_path,
+      provider = excluded.provider,
+      model = excluded.model,
+      allow_uploads = excluded.allow_uploads,
+      updated_by = excluded.updated_by,
+      updated_at = CURRENT_TIMESTAMP
+  `).run(tripId, vaultPath, uploadPath, provider, model, allowUploads ? 1 : 0, updatedBy);
+
+  if (previous && previous.vault_path !== vaultPath) {
+    clearTripIndex(tripId);
+  }
 });
 
 const replaceSingleFileIndex = db.transaction((tripId, chunkRows, relativePath) => {
@@ -610,6 +689,7 @@ router.get('/', authenticate, (req, res) => {
 
   try {
     const config = getKnowledgebaseConfig(tripId);
+    validateStoredKnowledgebaseConfig(config);
     const synthesis = getKnowledgebaseSynthesisSnapshot(tripId, config);
     const stats = getKnowledgebaseStats(tripId);
     const keys = getKnowledgebaseKeys();
@@ -624,7 +704,7 @@ router.get('/', authenticate, (req, res) => {
         has_gemini_key: !!keys.gemini_api_key,
         has_anthropic_key: !!keys.anthropic_api_key,
       },
-      messages: loadMessages(tripId, sessionId),
+      messages: loadMessages(tripId, sessionId, req.user.id),
     });
   } catch (err) {
     res.status(400).json({ error: err.message || 'Failed to load knowledgebase' });
@@ -637,6 +717,7 @@ router.get('/synthesis', authenticate, (req, res) => {
 
   try {
     const config = getKnowledgebaseConfig(tripId);
+    validateStoredKnowledgebaseConfig(config);
     const synthesis = getKnowledgebaseSynthesisSnapshot(tripId, config, {
       socketId: req.headers['x-socket-id'],
     });
@@ -653,25 +734,21 @@ router.put('/config', authenticate, adminOnly, (req, res) => {
   try {
     const provider = PROVIDERS.has(req.body.provider) ? req.body.provider : 'gemini';
     const model = String(req.body.model || DEFAULT_MODELS[provider]).trim() || DEFAULT_MODELS[provider];
-    const vaultPath = ensureReadableDirectory(req.body.vault_path);
-    const uploadPath = ensureReadableDirectory(req.body.upload_path);
+    const { vaultPath, uploadPath } = validateKnowledgebasePaths({
+      vault_path: req.body.vault_path,
+      upload_path: req.body.upload_path,
+    }, { requireWritableUpload: true });
     const allowUploads = req.body.allow_uploads !== false;
 
-    fs.accessSync(uploadPath, fs.constants.W_OK);
-
-    db.prepare(`
-      INSERT INTO knowledgebase_configs (
-        trip_id, vault_path, upload_path, provider, model, allow_uploads, updated_by
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(trip_id) DO UPDATE SET
-        vault_path = excluded.vault_path,
-        upload_path = excluded.upload_path,
-        provider = excluded.provider,
-        model = excluded.model,
-        allow_uploads = excluded.allow_uploads,
-        updated_by = excluded.updated_by,
-        updated_at = CURRENT_TIMESTAMP
-    `).run(tripId, vaultPath, uploadPath, provider, model, allowUploads ? 1 : 0, req.user.id);
+    upsertKnowledgebaseConfig({
+      tripId,
+      vaultPath,
+      uploadPath,
+      provider,
+      model,
+      allowUploads,
+      updatedBy: req.user.id,
+    });
 
     const config = getKnowledgebaseConfig(tripId);
     const stats = getKnowledgebaseStats(tripId);
@@ -691,6 +768,7 @@ router.post('/synthesize', authenticate, demoUploadBlock, (req, res) => {
   try {
     const config = getKnowledgebaseConfig(tripId);
     if (!config) return res.status(400).json({ error: 'Knowledgebase is not configured yet' });
+    validateStoredKnowledgebaseConfig(config);
 
     const currentRun = synthesisRuns.get(tripId);
     if (currentRun && (currentRun.state === 'queued' || currentRun.state === 'synthesizing' || currentRun.state === 'reindexing')) {
@@ -757,6 +835,7 @@ router.post('/reindex', authenticate, adminOnly, (req, res) => {
   try {
     const config = getKnowledgebaseConfig(tripId);
     if (!config) return res.status(400).json({ error: 'Knowledgebase is not configured yet' });
+    validateStoredKnowledgebaseConfig(config);
 
     const result = reindexTripKnowledgebase(tripId, config);
     const stats = getKnowledgebaseStats(tripId);
@@ -779,6 +858,7 @@ router.post('/query', authenticate, async (req, res) => {
   try {
     const config = getKnowledgebaseConfig(tripId);
     if (!config) return res.status(400).json({ error: 'Knowledgebase is not configured yet' });
+    validateStoredKnowledgebaseConfig(config);
     const stats = getKnowledgebaseStats(tripId);
 
     const keys = getKnowledgebaseKeys();
@@ -805,7 +885,7 @@ router.post('/query', authenticate, async (req, res) => {
       return;
     }
 
-    const history = loadMessages(tripId, sessionId, 8).map(message => ({
+    const history = loadMessages(tripId, sessionId, req.user.id, 8).map(message => ({
       role: message.role,
       content: message.content,
     }));
@@ -846,6 +926,7 @@ router.get('/source', authenticate, (req, res) => {
   try {
     const config = getKnowledgebaseConfig(tripId);
     if (!config) return res.status(400).json({ error: 'Knowledgebase is not configured yet' });
+    validateStoredKnowledgebaseConfig(config);
 
     const source = req.query.reference
       ? resolveKnowledgebaseSourceReference(config, req.query.source, req.query.reference)
@@ -863,6 +944,7 @@ router.get('/asset', authenticate, (req, res) => {
   try {
     const config = getKnowledgebaseConfig(tripId);
     if (!config) return res.status(400).json({ error: 'Knowledgebase is not configured yet' });
+    validateStoredKnowledgebaseConfig(config);
 
     const asset = resolveKnowledgebaseAsset(config, req.query.source, req.query.asset);
     res.set('Cache-Control', 'private, max-age=300');
@@ -880,6 +962,7 @@ router.post('/upload', authenticate, demoUploadBlock, markdownUpload.single('fil
   try {
     const config = getKnowledgebaseConfig(tripId);
     if (!config) return res.status(400).json({ error: 'Knowledgebase is not configured yet' });
+    validateStoredKnowledgebaseConfig(config);
     if (!config.allow_uploads) return res.status(403).json({ error: 'Uploads are disabled for this knowledgebase' });
 
     const vaultPath = ensureReadableDirectory(config.vault_path);

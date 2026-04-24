@@ -150,12 +150,49 @@ function ensureReadableDirectory(dirPath) {
   if (!stat || !stat.isDirectory()) throw new Error('Directory not found');
 
   fs.accessSync(normalized, fs.constants.R_OK);
-  return normalized;
+  return realpathForComparison(normalized);
+}
+
+function realpathForComparison(inputPath) {
+  const resolved = path.resolve(inputPath);
+  const stat = fs.statSync(resolved, { throwIfNoEntry: false });
+
+  if (stat) {
+    return fs.realpathSync.native
+      ? fs.realpathSync.native(resolved)
+      : fs.realpathSync(resolved);
+  }
+
+  const parent = path.dirname(resolved);
+  const parentStat = fs.statSync(parent, { throwIfNoEntry: false });
+  if (!parentStat) return resolved;
+
+  const parentReal = fs.realpathSync.native
+    ? fs.realpathSync.native(parent)
+    : fs.realpathSync(parent);
+  return path.join(parentReal, path.basename(resolved));
 }
 
 function isPathInside(parentPath, targetPath) {
-  const relative = path.relative(path.resolve(parentPath), path.resolve(targetPath));
+  const relative = path.relative(
+    realpathForComparison(parentPath),
+    realpathForComparison(targetPath)
+  );
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function parseAllowedRootPaths(value) {
+  return String(value || '')
+    .split(',')
+    .map(entry => entry.trim())
+    .filter(Boolean)
+    .map(normalizeAbsolutePath)
+    .filter(Boolean)
+    .map(realpathForComparison);
+}
+
+function isPathInsideAny(parentPaths, targetPath) {
+  return (parentPaths || []).some(parentPath => isPathInside(parentPath, targetPath));
 }
 
 function sanitizeUploadFilename(fileName) {
@@ -565,11 +602,13 @@ module.exports = {
   extractGeminiText,
   findVaultFileByBasename,
   isPathInside,
+  isPathInsideAny,
   isLikelyMarkdownNoteReference,
   normalizeKnowledgebaseSessionId,
   normalizeAbsolutePath,
   normalizeVaultReferenceTarget,
   normalizeVaultRelativePath,
+  parseAllowedRootPaths,
   parseVaultReference,
   rankKnowledgebaseCandidates,
   resolveVaultReference,
