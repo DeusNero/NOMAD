@@ -10,10 +10,12 @@ const {
   buildKnowledgebasePrompt,
   chunkMarkdownContent,
   isPathInside,
+  isPathInsideAny,
   isLikelyMarkdownNoteReference,
   normalizeKnowledgebaseSessionId,
   normalizeAbsolutePath,
   normalizeVaultReferenceTarget,
+  parseAllowedRootPaths,
   parseVaultReference,
   rankKnowledgebaseCandidates,
   resolveVaultReference,
@@ -36,6 +38,47 @@ test('isPathInside recognizes child paths and blocks siblings', () => {
 
   assert.equal(isPathInside(root, child), true);
   assert.equal(isPathInside(root, sibling), false);
+});
+
+test('isPathInside resolves symlinks before approving children', (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-root-'));
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-outside-'));
+  const link = path.join(root, 'linked-outside');
+  const outsideFile = path.join(outside, 'secret.md');
+
+  fs.writeFileSync(outsideFile, '# Secret');
+
+  try {
+    fs.symlinkSync(outside, link, 'dir');
+  } catch (err) {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+    t.skip(`Symlinks are not available: ${err.message}`);
+    return;
+  }
+
+  try {
+    assert.equal(isPathInside(root, path.join(link, 'secret.md')), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test('parseAllowedRootPaths supports comma-separated roots for allowlists', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-allowed-root-'));
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'kb-allowed-other-'));
+
+  try {
+    const allowed = parseAllowedRootPaths(`${root}, ${other}, relative/path`);
+
+    assert.equal(allowed.length, 2);
+    assert.equal(isPathInsideAny(allowed, path.join(root, 'japan', 'note.md')), true);
+    assert.equal(isPathInsideAny([root], path.join(other, 'note.md')), false);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(other, { recursive: true, force: true });
+  }
 });
 
 test('sanitizeUploadFilename strips traversal and forces markdown extension', () => {
