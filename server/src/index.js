@@ -148,8 +148,9 @@ app.use((err, req, res, next) => {
 const scheduler = require('./scheduler');
 
 const PORT = process.env.PORT || 3001;
-const server = app.listen(PORT, () => {
-  console.log(`NOMAD API running on port ${PORT}`);
+const HOST = process.env.HOST || '127.0.0.1';
+const server = app.listen(PORT, HOST, () => {
+  console.log(`NOMAD API running on http://${HOST}:${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   if (process.env.DEMO_MODE === 'true') console.log('Demo mode: ENABLED');
   scheduler.start();
