@@ -155,22 +155,24 @@ function ensureReadableDirectory(dirPath) {
 
 function realpathForComparison(inputPath) {
   const resolved = path.resolve(inputPath);
-  const stat = fs.statSync(resolved, { throwIfNoEntry: false });
+  const missingParts = [];
+  let current = resolved;
 
-  if (stat) {
-    return fs.realpathSync.native
-      ? fs.realpathSync.native(resolved)
-      : fs.realpathSync(resolved);
+  while (true) {
+    const stat = fs.statSync(current, { throwIfNoEntry: false });
+    if (stat) {
+      const currentReal = fs.realpathSync.native
+        ? fs.realpathSync.native(current)
+        : fs.realpathSync(current);
+      return path.join(currentReal, ...missingParts.reverse());
+    }
+
+    const parent = path.dirname(current);
+    if (parent === current) return resolved;
+
+    missingParts.push(path.basename(current));
+    current = parent;
   }
-
-  const parent = path.dirname(resolved);
-  const parentStat = fs.statSync(parent, { throwIfNoEntry: false });
-  if (!parentStat) return resolved;
-
-  const parentReal = fs.realpathSync.native
-    ? fs.realpathSync.native(parent)
-    : fs.realpathSync(parent);
-  return path.join(parentReal, path.basename(resolved));
 }
 
 function isPathInside(parentPath, targetPath) {
